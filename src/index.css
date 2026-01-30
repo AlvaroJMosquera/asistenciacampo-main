@@ -1,0 +1,172 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Agricultural Professional Design System */
+
+@layer base {
+  :root {
+    /* Primary - Deep Forest Green */
+    --primary: 142 45% 25%;
+    --primary-foreground: 0 0% 100%;
+
+    /* Background - Clean White */
+    --background: 0 0% 100%;
+    --foreground: 142 20% 15%;
+
+    /* Card - Soft warm white */
+    --card: 40 20% 98%;
+    --card-foreground: 142 20% 15%;
+
+    /* Popover */
+    --popover: 0 0% 100%;
+    --popover-foreground: 142 20% 15%;
+
+    /* Secondary - Sage Green */
+    --secondary: 142 20% 92%;
+    --secondary-foreground: 142 45% 25%;
+
+    /* Muted - Light Sage */
+    --muted: 142 15% 94%;
+    --muted-foreground: 142 10% 45%;
+
+    /* Accent - Golden Wheat */
+    --accent: 42 85% 55%;
+    --accent-foreground: 142 45% 15%;
+
+    /* Destructive - Alert Red */
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    /* Success - Vibrant Green */
+    --success: 142 70% 45%;
+    --success-foreground: 0 0% 100%;
+
+    /* Warning - Amber */
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 100%;
+
+    /* Border & Input */
+    --border: 142 15% 85%;
+    --input: 142 15% 85%;
+    --ring: 142 45% 25%;
+
+    --radius: 0.75rem;
+
+    /* Sidebar */
+    --sidebar-background: 142 25% 97%;
+    --sidebar-foreground: 142 20% 25%;
+    --sidebar-primary: 142 45% 25%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 142 20% 92%;
+    --sidebar-accent-foreground: 142 45% 25%;
+    --sidebar-border: 142 15% 88%;
+    --sidebar-ring: 142 45% 25%;
+
+    /* Chart colors */
+    --chart-1: 142 70% 45%;
+    --chart-2: 42 85% 55%;
+    --chart-3: 200 70% 50%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 0 72% 51%;
+  }
+
+  .dark {
+    /* Dark mode - Professional dark green theme */
+    --primary: 142 50% 60%;
+    --primary-foreground: 142 45% 10%;
+
+    --background: 142 25% 8%;
+    --foreground: 142 10% 95%;
+
+    --card: 142 20% 12%;
+    --card-foreground: 142 10% 95%;
+
+    --popover: 142 20% 10%;
+    --popover-foreground: 142 10% 95%;
+
+    --secondary: 142 20% 18%;
+    --secondary-foreground: 142 50% 60%;
+
+    --muted: 142 15% 20%;
+    --muted-foreground: 142 10% 65%;
+
+    --accent: 42 85% 55%;
+    --accent-foreground: 142 45% 10%;
+
+    --destructive: 0 62% 45%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 142 70% 50%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 38 92% 55%;
+    --warning-foreground: 0 0% 100%;
+
+    --border: 142 15% 22%;
+    --input: 142 15% 22%;
+    --ring: 142 50% 60%;
+
+    --sidebar-background: 142 25% 10%;
+    --sidebar-foreground: 142 10% 90%;
+    --sidebar-primary: 142 50% 60%;
+    --sidebar-primary-foreground: 142 45% 10%;
+    --sidebar-accent: 142 20% 18%;
+    --sidebar-accent-foreground: 142 50% 60%;
+    --sidebar-border: 142 15% 18%;
+    --sidebar-ring: 142 50% 60%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "rlig" 1, "calt" 1;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* High contrast for outdoor visibility */
+  html {
+    font-size: 16px;
+  }
+
+  @media (max-width: 640px) {
+    html {
+      font-size: 18px;
+    }
+  }
+}
+
+@layer utilities {
+  /* Touch-friendly targets */
+  .touch-target {
+    @apply min-h-[48px] min-w-[48px];
+  }
+
+  /* Large button for field use */
+  .btn-field {
+    @apply min-h-[64px] text-lg font-bold rounded-xl shadow-lg active:scale-[0.98] transition-transform;
+  }
+
+  /* Sync status indicators */
+  .sync-indicator {
+    @apply inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium;
+  }
+
+  .sync-success {
+    @apply bg-success/20 text-success;
+  }
+
+  .sync-pending {
+    @apply bg-warning/20 text-warning;
+  }
+
+  .sync-offline {
+    @apply bg-destructive/20 text-destructive;
+  }
+}
