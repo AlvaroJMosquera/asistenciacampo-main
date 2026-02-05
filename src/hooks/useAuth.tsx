@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useState, ReactNode } from 'react
 import { User, Session } from '@supabase/supabase-js';
 import { supabase } from '@/integrations/supabase/client';
 
-type AppRole = 'operario' | 'supervisor';
+type AppRole = 'operario' | 'operario_maquinaria' | 'supervisor';
 
 interface Profile {
   id: string;
@@ -17,6 +17,8 @@ interface AuthContextType {
   role: AppRole | null;
   isLoading: boolean;
   isSupervisor: boolean;
+  isOperarioMaquinaria: boolean;
+
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
   signUp: (email: string, password: string, nombre: string) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
@@ -48,6 +50,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       setProfile(profileData);
 
+      // 👇 si tu tabla user_roles puede tener más de un rol,
+      // cámbialo a .maybeSingle() + lógica adicional.
       const { data: roleData, error: roleError } = await supabase
         .from('user_roles')
         .select('role')
@@ -75,32 +79,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   useEffect(() => {
-    // Set up auth state listener first
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (event, session) => {
-        setSession(session);
-        setUser(session?.user ?? null);
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      setSession(session);
+      setUser(session?.user ?? null);
 
-        // Defer profile fetch to avoid deadlock
-        if (session?.user) {
-          setTimeout(() => {
-            fetchProfile(session.user.id);
-          }, 0);
-        } else {
-          setProfile(null);
-          setRole(null);
-        }
-
-        if (event === 'SIGNED_OUT') {
-          setProfile(null);
-          setRole(null);
-        }
-
-        setIsLoading(false);
+      if (session?.user) {
+        setTimeout(() => {
+          fetchProfile(session.user.id);
+        }, 0);
+      } else {
+        setProfile(null);
+        setRole(null);
       }
-    );
 
-    // Then check for existing session
+      if (event === 'SIGNED_OUT') {
+        setProfile(null);
+        setRole(null);
+      }
+
+      setIsLoading(false);
+    });
+
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setUser(session?.user ?? null);
@@ -112,7 +111,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setIsLoading(false);
     });
 
-    // Safety timeout to prevent infinite loading
     const timeout = setTimeout(() => {
       if (isLoading) {
         console.warn('Auth loading timeout - forcing load complete');
@@ -124,27 +122,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       subscription.unsubscribe();
       clearTimeout(timeout);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const signIn = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
     return { error };
   };
 
   const signUp = async (email: string, password: string, nombre: string) => {
     const redirectUrl = `${window.location.origin}/`;
-    
     const { error } = await supabase.auth.signUp({
       email,
       password,
       options: {
         emailRedirectTo: redirectUrl,
-        data: {
-          nombre,
-        },
+        data: { nombre },
       },
     });
     return { error };
@@ -165,6 +158,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     role,
     isLoading,
     isSupervisor: role === 'supervisor',
+    isOperarioMaquinaria: role === 'operario_maquinaria',
     signIn,
     signUp,
     signOut,

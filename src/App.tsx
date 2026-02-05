@@ -8,9 +8,13 @@ import { ProtectedRoute, SupervisorRoute, PublicRoute } from "@/components/Route
 
 import Auth from "./pages/Auth";
 import OperarioHome from "./pages/OperarioHome";
+import OperarioMaquinaria from "./pages/OperarioMaquinaria";
 import SupervisorDashboard from "./pages/SupervisorDashboard";
-import SupervisorTracking from "./pages/SupervisorTracking"; // ✅ NUEVO
+import SupervisorTracking from "./pages/SupervisorTracking"; 
 import NotFound from "./pages/NotFound";
+import OperarioMaquinariaInicio from "./pages/OperarioMaquinariaInicio";
+import OperarioMaquinariaFin from "./pages/OperarioMaquinariaFin";
+
 
 const queryClient = new QueryClient();
 
@@ -32,6 +36,33 @@ function AppContent() {
           element={
             <ProtectedRoute>
               <OperarioHome />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/OperarioMaquinaria"
+          element={
+            <ProtectedRoute>
+              <OperarioMaquinaria />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/OperarioMaquinaria/inicio"
+          element={
+            <ProtectedRoute>
+              <OperarioMaquinariaInicio />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/OperarioMaquinaria/fin"
+          element={
+            <ProtectedRoute>
+              <OperarioMaquinariaFin />
             </ProtectedRoute>
           }
         />
