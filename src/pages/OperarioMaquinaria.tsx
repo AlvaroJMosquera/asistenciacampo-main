@@ -51,7 +51,7 @@ type RevisionState = {
 const REQUIRED_MAQUINARIA_PHOTOS = 5;
 
 // ✅ Evidencia 1 habilitada tras 3 horas (si deseas otro tiempo, cambia aquí)
-const FOLLOWUP_REQUIRED_MS = 1  * 60 * 1000;
+const FOLLOWUP_REQUIRED_MS =   60 * 1000;
 
 // ---------- Local storage: evidencias (para habilitar offline) ----------
 function storageKey(userId: string, entradaId: string) {
