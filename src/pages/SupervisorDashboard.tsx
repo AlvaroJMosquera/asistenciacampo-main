@@ -7,25 +7,44 @@ import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { ArrowLeft, Download, Users, LogIn, LogOut, AlertTriangle, Loader2, MapPin, UserX } from 'lucide-react';
+import {
+  ArrowLeft,
+  Download,
+  Users,
+  LogIn,
+  LogOut,
+  AlertTriangle,
+  Loader2,
+  MapPin,
+  UserX,
+  ClipboardCheck,
+} from 'lucide-react';
 import { Link } from 'react-router-dom';
 
-interface AttendanceRecord {
+type EventType = 'entrada' | 'salida' | 'rev_inicio' | 'rev_fin';
+
+interface SupervisorEventRow {
   id: string;
   user_id: string;
   fecha: string;
-  tipo_registro: 'entrada' | 'salida';
+  tipo_evento: EventType;
   timestamp: string;
-  latitud: number | null;
-  longitud: number | null;
-  precision_gps: number | null;
-  fuera_zona: boolean;
-  foto_url: string | null;
-  es_inconsistente: boolean;
 
-  // ✅ nuevos campos (si los agregas en BD)
-  hac_ste?: string | null; // Hacienda-Suerte
-  suerte_nom?: string | null; // nombre de la suerte (opcional)
+  // asistencia
+  latitud?: number | null;
+  longitud?: number | null;
+  precision_gps?: number | null;
+  fuera_zona?: boolean;
+  foto_url?: string | null;
+  es_inconsistente?: boolean;
+
+  // ubicación
+  hac_ste?: string | null;
+  suerte_nom?: string | null;
+
+  // revisión (opcional)
+  rev_fotos_count?: number;
+  rev_fotos_required?: number;
 
   profiles?: { nombre: string } | null;
 }
@@ -33,20 +52,20 @@ interface AttendanceRecord {
 export default function SupervisorDashboard() {
   const { signOut } = useAuth();
 
-  const [records, setRecords] = useState<AttendanceRecord[]>([]);
+  const [records, setRecords] = useState<SupervisorEventRow[]>([]);
   const [users, setUsers] = useState<{ id: string; nombre: string }[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   const [dateFilter, setDateFilter] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [userFilter, setUserFilter] = useState<string>('all');
+
+  // ⚠️ este filtro aplica SOLO a asistencia (entrada/salida)
   const [typeFilter, setTypeFilter] = useState<string>('all');
 
-  const fetchUsers = async () => {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('id, nombre')
-      .eq('activo', true);
+  const REQUIRED_MAQUINARIA_PHOTOS = 5;
 
+  const fetchUsers = async () => {
+    const { data, error } = await supabase.from('profiles').select('id, nombre').eq('activo', true);
     if (error) console.error(error);
     setUsers(data || []);
   };
@@ -54,43 +73,102 @@ export default function SupervisorDashboard() {
   const fetchRecords = async () => {
     setIsLoading(true);
 
-    // ✅ importante: traer también hac_ste / suerte_nom si existen en la tabla
-    let query = supabase
+    // ----------------- 1) Asistencia (entrada/salida) -----------------
+    let attQuery = supabase
       .from('registros_asistencia')
-      .select('id,user_id,fecha,tipo_registro,timestamp,latitud,longitud,precision_gps,fuera_zona,foto_url,es_inconsistente,hac_ste,suerte_nom')
+      .select(
+        'id,user_id,fecha,tipo_registro,timestamp,latitud,longitud,precision_gps,fuera_zona,foto_url,es_inconsistente,hac_ste,suerte_nom'
+      )
       .eq('fecha', dateFilter)
       .order('timestamp', { ascending: false });
 
-    if (userFilter !== 'all') query = query.eq('user_id', userFilter);
-    if (typeFilter !== 'all') query = query.eq('tipo_registro', typeFilter);
+    if (userFilter !== 'all') attQuery = attQuery.eq('user_id', userFilter);
+    if (typeFilter !== 'all') attQuery = attQuery.eq('tipo_registro', typeFilter);
 
-    const { data: recordsData, error: recErr } = await query;
+    const { data: attData, error: attErr } = await attQuery;
+    if (attErr) console.error(attErr);
 
-    if (recErr) console.error(recErr);
+    const attendanceRows: SupervisorEventRow[] = (attData || []).map((r: any) => ({
+      id: r.id,
+      user_id: r.user_id,
+      fecha: r.fecha,
+      tipo_evento: r.tipo_registro, // 'entrada' | 'salida'
+      timestamp: r.timestamp,
+      latitud: r.latitud ?? null,
+      longitud: r.longitud ?? null,
+      precision_gps: r.precision_gps ?? null,
+      fuera_zona: r.fuera_zona ?? false,
+      foto_url: r.foto_url ?? null,
+      es_inconsistente: !!r.es_inconsistente,
+      hac_ste: r.hac_ste ?? null,
+      suerte_nom: r.suerte_nom ?? null,
+    }));
 
-    if (!recordsData || recordsData.length === 0) {
+    // ----------------- 2) Revisiones (inicio/fin) -----------------
+    // Las revisiones se muestran siempre (no dependen de typeFilter)
+    let revQuery = supabase
+      .from('revision_maquinaria')
+      .select('id,user_id,tipo,created_at')
+      .gte('created_at', `${dateFilter} 00:00:00`)
+      .lte('created_at', `${dateFilter} 23:59:59`)
+      .order('created_at', { ascending: false });
+
+    if (userFilter !== 'all') revQuery = revQuery.eq('user_id', userFilter);
+
+    const { data: revData, error: revErr } = await revQuery;
+    if (revErr) console.error(revErr);
+
+    // (Opcional) contar fotos por revisión
+    const revIds = (revData || []).map((r: any) => r.id);
+    const revCountMap = new Map<string, number>();
+
+    if (revIds.length > 0) {
+      const { data: fotos, error: fotosErr } = await supabase
+        .from('revision_maquinaria_fotos')
+        .select('revision_id')
+        .in('revision_id', revIds);
+
+      if (fotosErr) console.warn(fotosErr);
+
+      (fotos || []).forEach((f: any) => {
+        revCountMap.set(f.revision_id, (revCountMap.get(f.revision_id) ?? 0) + 1);
+      });
+    }
+
+    const revisionRows: SupervisorEventRow[] = (revData || []).map((r: any) => ({
+      id: `rev_${r.id}`, // para no chocar con ids de asistencia
+      user_id: r.user_id,
+      fecha: dateFilter,
+      tipo_evento: r.tipo === 'inicio' ? 'rev_inicio' : 'rev_fin',
+      timestamp: r.created_at,
+      rev_fotos_count: revCountMap.get(r.id) ?? 0,
+      rev_fotos_required: REQUIRED_MAQUINARIA_PHOTOS,
+    }));
+
+    // ----------------- 3) Merge + perfiles -----------------
+    const mergedAll = [...attendanceRows, ...revisionRows].sort(
+      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+    );
+
+    if (mergedAll.length === 0) {
       setRecords([]);
       setIsLoading(false);
       return;
     }
 
-    // perfiles
-    const userIds = [...new Set(recordsData.map((r) => r.user_id))];
-    const { data: profilesData, error: profErr } = await supabase
-      .from('profiles')
-      .select('id, nombre')
-      .in('id', userIds);
-
+    const userIds = [...new Set(mergedAll.map((r) => r.user_id))];
+    const { data: profilesData, error: profErr } = await supabase.from('profiles').select('id, nombre').in('id', userIds);
     if (profErr) console.error(profErr);
 
-    const profilesMap = new Map(profilesData?.map((p) => [p.id, p]) || []);
+    const profilesMap = new Map(profilesData?.map((p: any) => [p.id, p]) || []);
 
-    const merged: AttendanceRecord[] = (recordsData as AttendanceRecord[]).map((r) => ({
-      ...r,
-      profiles: profilesMap.get(r.user_id) || null,
-    }));
+    setRecords(
+      mergedAll.map((r) => ({
+        ...r,
+        profiles: profilesMap.get(r.user_id) || null,
+      }))
+    );
 
-    setRecords(merged);
     setIsLoading(false);
   };
 
@@ -103,53 +181,42 @@ export default function SupervisorDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateFilter, userFilter, typeFilter]);
 
-  // ---------------------- STATS NUEVAS ----------------------
+  // ---------------------- STATS (solo asistencia para entradas/salidas) ----------------------
   const stats = useMemo(() => {
-  const totalActivosPerfil = users.length;
+    const totalActivosPerfil = users.length;
 
-  // total personas con algún registro (únicos)
-  const totalPersonas = new Set(records.map((r) => r.user_id)).size;
+    const attendanceOnly = records.filter((r) => r.tipo_evento === 'entrada' || r.tipo_evento === 'salida');
 
-  // inconsistentes por usuario único
-  const inconsistentesUnicos = new Set(records.filter((r) => r.es_inconsistente).map((r) => r.user_id)).size;
+    const totalPersonas = new Set(attendanceOnly.map((r) => r.user_id)).size;
 
-  // usuarios con entrada / salida (solo presencia, no estado final)
-  const entradasUnicas = new Set(records.filter((r) => r.tipo_registro === 'entrada').map((r) => r.user_id));
-  const salidasUnicas = new Set(records.filter((r) => r.tipo_registro === 'salida').map((r) => r.user_id));
+    const inconsistentesUnicos = new Set(
+      attendanceOnly.filter((r) => r.es_inconsistente).map((r) => r.user_id)
+    ).size;
 
-  // ✅ Activos sin salida (estado final): último evento del usuario = "entrada"
-  const lastEventByUser = new Map<string, AttendanceRecord>();
+    const entradasUnicas = new Set(attendanceOnly.filter((r) => r.tipo_evento === 'entrada').map((r) => r.user_id));
+    const salidasUnicas = new Set(attendanceOnly.filter((r) => r.tipo_evento === 'salida').map((r) => r.user_id));
 
-  // aseguramos orden ascendente para que el último sobreescriba bien
-  const ordered = [...records].sort(
-    (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-  );
+    // Activos sin salida: último evento de asistencia por usuario = entrada
+    const lastEventByUser = new Map<string, SupervisorEventRow>();
+    const ordered = [...attendanceOnly].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    for (const r of ordered) lastEventByUser.set(r.user_id, r);
 
-  for (const r of ordered) {
-    lastEventByUser.set(r.user_id, r);
-  }
+    const activosSinSalida = Array.from(lastEventByUser.values()).filter((r) => r.tipo_evento === 'entrada').length;
 
-  const activosSinSalida = Array.from(lastEventByUser.values()).filter(
-    (r) => r.tipo_registro === 'entrada'
-  ).length;
+    const inactivos = Math.max(0, totalActivosPerfil - entradasUnicas.size);
 
-  // ✅ Inactivos (sin entrada): profiles activos - usuarios que marcaron al menos 1 entrada
-  const inactivos = Math.max(0, totalActivosPerfil - entradasUnicas.size);
+    return {
+      totalPersonas,
+      entradas: entradasUnicas.size,
+      salidas: salidasUnicas.size,
+      inconsistentes: inconsistentesUnicos,
+      activosSinSalida,
+      inactivos,
+      totalActivosPerfil,
+    };
+  }, [records, users]);
 
-  return {
-    totalPersonas,
-    entradas: entradasUnicas.size,
-    salidas: salidasUnicas.size,
-    inconsistentes: inconsistentesUnicos,
-    activosSinSalida,
-    inactivos,
-    totalActivosPerfil,
-  };
-}, [records, users]);
-
-  // ---------------------------------------------------------
-
-  // ✅ CSV con columna Ubicación (Hacienda-Suerte)
+  // ✅ CSV: incluye revisiones también
   const exportCSV = () => {
     const headers = [
       'Fecha',
@@ -161,18 +228,20 @@ export default function SupervisorDashboard() {
       'GPS',
       'Precision(m)',
       'Inconsistente',
+      'RevisionFotos',
     ];
 
     const rows = records.map((r) => [
       r.fecha,
       format(new Date(r.timestamp), 'HH:mm:ss'),
       (r.profiles?.nombre || 'N/A').replaceAll(',', ' '),
-      r.tipo_registro,
+      r.tipo_evento,
       (r.hac_ste || '—').replaceAll(',', ' '),
       (r.suerte_nom || '—').replaceAll(',', ' '),
       r.latitud != null && r.longitud != null ? `${r.latitud},${r.longitud}` : 'Sin GPS',
       r.precision_gps != null ? String(Math.round(r.precision_gps)) : '—',
       r.es_inconsistente ? 'Sí' : 'No',
+      typeof r.rev_fotos_count === 'number' ? `${r.rev_fotos_count}/${r.rev_fotos_required ?? REQUIRED_MAQUINARIA_PHOTOS}` : '—',
     ]);
 
     const csv = [headers, ...rows].map((row) => row.join(',')).join('\n');
@@ -185,6 +254,25 @@ export default function SupervisorDashboard() {
     a.click();
 
     URL.revokeObjectURL(url);
+  };
+
+  const renderTipo = (r: SupervisorEventRow) => {
+    if (r.tipo_evento === 'entrada') return <span className="text-success font-medium">entrada</span>;
+    if (r.tipo_evento === 'salida') return <span className="text-destructive font-medium">salida</span>;
+
+    const label = r.tipo_evento === 'rev_inicio' ? 'revisión inicio' : 'revisión fin';
+    const count = typeof r.rev_fotos_count === 'number' ? r.rev_fotos_count : undefined;
+    const req = r.rev_fotos_required ?? REQUIRED_MAQUINARIA_PHOTOS;
+
+    return (
+      <span className="text-primary font-medium inline-flex items-center gap-2">
+        <ClipboardCheck className="h-4 w-4" />
+        {label}
+        {typeof count === 'number' ? (
+          <span className="text-xs text-muted-foreground">({Math.min(count, req)}/{req})</span>
+        ) : null}
+      </span>
+    );
   };
 
   return (
@@ -217,9 +305,13 @@ export default function SupervisorDashboard() {
               </div>
             </CardContent>
           </Card>
-        <Link to="/supervisor/tracking">
-          <Button variant="outline" size="sm">Mapa</Button>
-        </Link>
+
+          <Link to="/supervisor/tracking">
+            <Button variant="outline" size="sm">
+              Mapa
+            </Button>
+          </Link>
+
           <Card>
             <CardContent className="p-4 flex items-center gap-3">
               <LogIn className="h-8 w-8 text-success" />
@@ -250,7 +342,6 @@ export default function SupervisorDashboard() {
             </CardContent>
           </Card>
 
-          {/* ✅ Req 2 */}
           <Card>
             <CardContent className="p-4 flex items-center gap-3">
               <MapPin className="h-8 w-8 text-primary" />
@@ -261,7 +352,6 @@ export default function SupervisorDashboard() {
             </CardContent>
           </Card>
 
-          {/* ✅ Req 3 */}
           <Card>
             <CardContent className="p-4 flex items-center gap-3">
               <UserX className="h-8 w-8 text-muted-foreground" />
@@ -300,6 +390,7 @@ export default function SupervisorDashboard() {
               </SelectContent>
             </Select>
 
+            {/* ⚠️ Aplica solo a asistencia */}
             <Select value={typeFilter} onValueChange={setTypeFilter}>
               <SelectTrigger className="w-32">
                 <SelectValue placeholder="Tipo" />
@@ -343,13 +434,9 @@ export default function SupervisorDashboard() {
                     <TableRow key={r.id} className={r.es_inconsistente ? 'bg-warning/10' : ''}>
                       <TableCell>{format(new Date(r.timestamp), 'HH:mm')}</TableCell>
                       <TableCell>{r.profiles?.nombre || 'N/A'}</TableCell>
-                      <TableCell>
-                        <span className={r.tipo_registro === 'entrada' ? 'text-success' : 'text-destructive'}>
-                          {r.tipo_registro}
-                        </span>
-                      </TableCell>
 
-                      {/* ✅ Req 1 */}
+                      <TableCell>{renderTipo(r)}</TableCell>
+
                       <TableCell>
                         <div className="text-sm">
                           <div className="font-medium">{r.hac_ste || '—'}</div>
@@ -357,7 +444,10 @@ export default function SupervisorDashboard() {
                         </div>
                       </TableCell>
 
-                      <TableCell>{r.latitud ? `±${Math.round(r.precision_gps || 0)}m` : '—'}</TableCell>
+                      <TableCell>
+                        {r.latitud != null ? `±${Math.round(r.precision_gps || 0)}m` : '—'}
+                      </TableCell>
+
                       <TableCell>
                         {r.foto_url ? (
                           <a href={r.foto_url} target="_blank" rel="noreferrer" className="text-primary underline">
@@ -383,9 +473,8 @@ export default function SupervisorDashboard() {
           </CardContent>
         </Card>
 
-        {/* Nota pequeña para contexto */}
         <p className="text-xs text-muted-foreground">
-          * “Inactivos” se calcula usando <code>profiles.activo=true</code> menos “usuarios con entrada” del día.
+          * “Inactivos” se calcula usando <code>profiles.activo=true</code> menos “usuarios con entrada” del día (solo asistencia).
         </p>
       </main>
     </div>
