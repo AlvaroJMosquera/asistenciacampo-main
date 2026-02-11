@@ -28,7 +28,7 @@ type FollowUpRow = { evidencia_n: 1 | 2; foto_url: string; timestamp: string };
 
 
 // ✅ pruebas: 1 minuto (cambia a 3*60*60*1000 en prod)
-const FOLLOWUP_REQUIRED_MS = 3*60 * 60 * 1000;
+const FOLLOWUP_REQUIRED_MS =  60 * 1000;
 
 function storageKey(userId: string, entradaId: string) {
   return `followups:${userId}:${entradaId}`;

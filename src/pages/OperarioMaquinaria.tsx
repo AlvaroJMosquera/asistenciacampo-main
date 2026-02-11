@@ -38,6 +38,7 @@ import {
 type FollowUpRow = { evidencia_n: 1 | 2; foto_url: string; timestamp: string };
 
 type RevisionTipo = 'inicio' | 'fin';
+
 type RevisionState = {
   loading: boolean;
   inicioComplete: boolean;
@@ -50,17 +51,16 @@ type RevisionState = {
 // ✅ Requeridas por revisión: 5 (frente, lado_der, lado_izq, trasera, cabina)
 const REQUIRED_MAQUINARIA_PHOTOS = 5;
 
-// ✅ Evidencia 1 habilitada tras 3 horas (si deseas otro tiempo, cambia aquí)
-const FOLLOWUP_REQUIRED_MS =   60 * 1000;
+// ✅ Evidencia 1 habilitada tras X tiempo (cambia aquí)
+const FOLLOWUP_REQUIRED_MS = 60 * 1000;
 
-// ---------- Local storage: evidencias (para habilitar offline) ----------
-function storageKey(userId: string, entradaId: string) {
+// ---------- Local storage: evidencias ----------
+function followupStorageKey(userId: string, entradaId: string) {
   return `followups:maq:${userId}:${entradaId}`;
 }
-
 function readLocalFollowups(userId: string, entradaId: string): FollowUpRow[] {
   try {
-    const raw = localStorage.getItem(storageKey(userId, entradaId));
+    const raw = localStorage.getItem(followupStorageKey(userId, entradaId));
     if (!raw) return [];
     const parsed = JSON.parse(raw) as FollowUpRow[];
     return Array.isArray(parsed) ? parsed : [];
@@ -68,12 +68,13 @@ function readLocalFollowups(userId: string, entradaId: string): FollowUpRow[] {
     return [];
   }
 }
-
 function writeLocalFollowups(userId: string, entradaId: string, rows: FollowUpRow[]) {
-  localStorage.setItem(storageKey(userId, entradaId), JSON.stringify(rows));
+  try {
+    localStorage.setItem(followupStorageKey(userId, entradaId), JSON.stringify(rows));
+  } catch {}
 }
 
-// ---------- Local storage: revisiones (fallback offline) ----------
+// ---------- Local storage: revisiones (estado completo) ----------
 function revisionLocalKey(userId: string, dateISO: string, tipo: RevisionTipo) {
   return `maq_revision_complete:${userId}:${dateISO}:${tipo}`;
 }
@@ -84,6 +85,68 @@ function readLocalRevisionComplete(userId: string, dateISO: string, tipo: Revisi
     return false;
   }
 }
+function writeLocalRevisionComplete(userId: string, dateISO: string, tipo: RevisionTipo, complete: boolean) {
+  try {
+    localStorage.setItem(revisionLocalKey(userId, dateISO, tipo), complete ? '1' : '0');
+  } catch {}
+}
+
+// ---------- Local storage: revisiones (pendientes offline) ----------
+type PendingRevision = {
+  id: string; // uuid local
+  user_id: string;
+  entrada_id: string;
+  tipo: RevisionTipo;
+  equipo_codigo: string;
+  timestamp: string;
+
+  // GPS + ubicación (si se pudo)
+  latitud: number | null;
+  longitud: number | null;
+  precision_gps: number | null;
+  fuera_zona: boolean;
+  hac_ste: string | null;
+  suerte_nom: string | null;
+
+  // fotos tomadas (paths locales o marcador)
+  photos: Array<{
+    foto_tipo: 'frente' | 'lado_derecho' | 'lado_izquierdo' | 'trasera' | 'cabina';
+    foto_url: string; // 'local://pending' si todavía no está en storage
+    timestamp: string;
+  }>;
+};
+
+const PENDING_REV_KEY = 'pending_revisions_v1';
+
+function readPendingRevisions(): PendingRevision[] {
+  try {
+    const raw = localStorage.getItem(PENDING_REV_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as PendingRevision[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writePendingRevisions(items: PendingRevision[]) {
+  try {
+    localStorage.setItem(PENDING_REV_KEY, JSON.stringify(items));
+  } catch {}
+}
+
+// ---------- Helpers ----------
+function safeUUID() {
+  try {
+    // @ts-ignore
+    if (typeof crypto !== 'undefined' && crypto?.randomUUID) return crypto.randomUUID();
+  } catch {}
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
 
 function isIOS() {
   if (typeof navigator === 'undefined') return false;
@@ -91,6 +154,178 @@ function isIOS() {
     /iPad|iPhone|iPod/.test(navigator.userAgent) ||
     (navigator.platform === 'MacIntel' && (navigator as any).maxTouchPoints > 1)
   );
+}
+
+type GeoResult = { nom: string; hac_ste: string } | null;
+
+async function resolveGeo(lat: number, lon: number): Promise<GeoResult> {
+  const { data, error } = await supabase.rpc('get_hacienda_by_point', { lat, lon });
+  if (error || !data || data.length === 0) return null;
+  return { nom: data[0].nom, hac_ste: data[0].hac_ste };
+}
+
+/**
+ * ✅ Sync de revisiones pendientes (metadata) cuando vuelve internet.
+ * OJO: aquí sincronizamos la tabla revision_maquinaria (no las fotos, porque tú las subes en la pantalla de /inicio o /fin).
+ * Si tus pantallas de revisión ya suben fotos directo a storage+tabla revision_maquinaria_fotos, entonces:
+ * - solo necesitamos crear el registro en revision_maquinaria al iniciar.
+ * - si estás offline, guardamos pendiente aquí, y al volver online lo insertamos.
+ */
+async function syncPendingRevisions(userId: string): Promise<{ synced: number; failed: number }> {
+  if (!navigator.onLine) return { synced: 0, failed: 0 };
+
+  const all = readPendingRevisions();
+  const mine = all.filter((x) => x.user_id === userId);
+  if (mine.length === 0) return { synced: 0, failed: 0 };
+
+  let synced = 0;
+  let failed = 0;
+
+  const keep: PendingRevision[] = [];
+  const others = all.filter((x) => x.user_id !== userId);
+
+  for (const item of mine) {
+    try {
+      // insertar revision_maquinaria (requiere que agregaste columnas: timestamp, latitud, longitud, precision_gps, fuera_zona, hac_ste, suerte_nom)
+      const payload: any = {
+        id: item.id,
+        user_id: item.user_id,
+        entrada_id: item.entrada_id,
+        tipo: item.tipo,
+        equipo_codigo: item.equipo_codigo,
+        timestamp: item.timestamp,
+        latitud: item.latitud,
+        longitud: item.longitud,
+        precision_gps: item.precision_gps,
+        fuera_zona: item.fuera_zona,
+        hac_ste: item.hac_ste,
+        suerte_nom: item.suerte_nom,
+      };
+
+      const { error } = await supabase.from('revision_maquinaria').insert(payload);
+      if (error) {
+        // duplicado (ya se insertó) -> lo damos por sincronizado
+        // @ts-ignore
+        if (error.code === '23505') {
+          synced++;
+          continue;
+        }
+        throw error;
+      }
+
+      synced++;
+    } catch (e) {
+      console.error('[syncPendingRevisions] failed', item, e);
+      failed++;
+      keep.push(item);
+    }
+  }
+
+  writePendingRevisions([...others, ...keep]);
+  return { synced, failed };
+}
+
+/**
+ * ✅ Crea (o deja pendiente) el registro revision_maquinaria al momento de arrancar la revisión
+ * Esto asegura: ubicación + nombre guardados SIEMPRE que se pueda.
+ */
+async function createRevisionRecord(params: {
+  userId: string;
+  entradaId: string;
+  tipo: RevisionTipo;
+  equipoCodigo: string;
+  getCurrentPosition: () => Promise<{ latitude: number; longitude: number; accuracy: number }>;
+}): Promise<{ success: boolean; revisionId?: string; coords?: any; geo?: GeoResult; error?: string }> {
+  const { userId, entradaId, tipo, equipoCodigo, getCurrentPosition } = params;
+
+  try {
+    // GPS best effort
+    let location: { latitude: number; longitude: number; accuracy: number } | null = null;
+    try {
+      location = await getCurrentPosition();
+    } catch {}
+
+    const hasCoords = location?.latitude != null && location?.longitude != null;
+
+    // Geo solo online
+    let geo: GeoResult = null;
+    if (navigator.onLine && hasCoords) {
+      geo = await resolveGeo(location!.latitude, location!.longitude);
+    }
+
+    const fueraZona = hasCoords ? !geo : false;
+
+    const revisionId = safeUUID();
+    const payload: any = {
+      id: revisionId,
+      user_id: userId,
+      entrada_id: entradaId,
+      tipo,
+      equipo_codigo: equipoCodigo,
+      timestamp: new Date().toISOString(),
+
+      latitud: location?.latitude ?? null,
+      longitud: location?.longitude ?? null,
+      precision_gps: location?.accuracy ?? null,
+      fuera_zona: fueraZona,
+      hac_ste: geo?.hac_ste ?? null,
+      suerte_nom: geo?.nom ?? null,
+    };
+
+    if (navigator.onLine) {
+      const { error } = await supabase.from('revision_maquinaria').insert(payload);
+      if (error) throw new Error(error.message);
+      return {
+        success: true,
+        revisionId,
+        coords: {
+          lat: location?.latitude ?? null,
+          lon: location?.longitude ?? null,
+          accuracy: location?.accuracy ?? null,
+        },
+        geo,
+      };
+    }
+
+    // OFFLINE: guardar pendiente para sync luego
+    const pending = readPendingRevisions();
+    const next: PendingRevision[] = [
+      ...pending.filter(
+        (x) => !(x.user_id === userId && x.entrada_id === entradaId && x.tipo === tipo)
+      ),
+      {
+        id: revisionId,
+        user_id: userId,
+        entrada_id: entradaId,
+        tipo,
+        equipo_codigo: equipoCodigo,
+        timestamp: payload.timestamp,
+
+        latitud: payload.latitud,
+        longitud: payload.longitud,
+        precision_gps: payload.precision_gps,
+        fuera_zona: payload.fuera_zona,
+        hac_ste: payload.hac_ste,
+        suerte_nom: payload.suerte_nom,
+        photos: [],
+      },
+    ];
+
+    writePendingRevisions(next);
+
+    return {
+      success: true,
+      revisionId,
+      coords: {
+        lat: location?.latitude ?? null,
+        lon: location?.longitude ?? null,
+        accuracy: location?.accuracy ?? null,
+      },
+      geo,
+    };
+  } catch (err: any) {
+    return { success: false, error: err?.message ? String(err.message) : 'Error creando revisión' };
+  }
 }
 
 export default function OperarioMaquinaria() {
@@ -110,6 +345,10 @@ export default function OperarioMaquinaria() {
   } = useAttendance();
 
   const { capturePhoto, error: cameraError } = useCamera();
+  const { getCurrentPosition } = useLocationTracking(null) as any; // ❗ si tu hook NO expone esto, quítalo
+  // ✅ Si tu useGeolocation ya existe (en useAttendance), usa ese hook aquí también:
+  // import { useGeolocation } from '@/hooks/useGeolocation';
+  // const { getCurrentPosition } = useGeolocation();
 
   const [modalState, setModalState] = useState<{
     isOpen: boolean;
@@ -121,7 +360,7 @@ export default function OperarioMaquinaria() {
 
   // Geo modal
   const [geoOpen, setGeoOpen] = useState(false);
-  const [geoInfo, setGeoInfo] = useState<{ nom: string; hac_ste: string } | null>(null);
+  const [geoInfo, setGeoInfo] = useState<GeoResult>(null);
   const [geoCoords, setGeoCoords] = useState<{
     lat: number | null;
     lon: number | null;
@@ -144,6 +383,9 @@ export default function OperarioMaquinaria() {
   const [remoteFollowups, setRemoteFollowups] = useState<FollowUpRow[]>([]);
   const [localFollowups, setLocalFollowups] = useState<FollowUpRow[]>([]);
   const [isLoadingFollowups, setIsLoadingFollowups] = useState(false);
+
+  // equipo seleccionado (si tú lo seleccionas en otra pantalla, cámbialo)
+  const [equipoCodigo, setEquipoCodigo] = useState<string>('EQ-000');
 
   // Ticker (contador offline)
   const [tick, setTick] = useState(0);
@@ -181,8 +423,9 @@ export default function OperarioMaquinaria() {
     return currentEntrada;
   }, [todayRecords]);
 
-  // Tracking ubicación mientras hay entrada abierta
   const activeEntradaId = activeEntrada?.id ?? null;
+
+  // Tracking ubicación mientras hay entrada abierta
   useLocationTracking(activeEntradaId);
 
   // Cargar registros al montar
@@ -197,6 +440,7 @@ export default function OperarioMaquinaria() {
     const localInicio = readLocalRevisionComplete(user.id, dateISO, 'inicio');
     const localFin = readLocalRevisionComplete(user.id, dateISO, 'fin');
 
+    // si offline: solo local
     if (!navigator.onLine) {
       setRev((prev) => ({
         ...prev,
@@ -255,6 +499,10 @@ export default function OperarioMaquinaria() {
     const inicioCompleteRemote = inicioCount >= REQUIRED_MAQUINARIA_PHOTOS;
     const finCompleteRemote = finCount >= REQUIRED_MAQUINARIA_PHOTOS;
 
+    // ✅ persistir local (fallback)
+    writeLocalRevisionComplete(user.id, dateISO, 'inicio', inicioCompleteRemote || localInicio);
+    writeLocalRevisionComplete(user.id, dateISO, 'fin', finCompleteRemote || localFin);
+
     setRev({
       loading: false,
       inicioCount,
@@ -283,13 +531,13 @@ export default function OperarioMaquinaria() {
     }
 
     setIsLoadingFollowups(true);
-    const { data, error } = await supabase
+    const { data, error: qErr } = await supabase
       .from('seguimiento_fotos')
       .select('evidencia_n, foto_url, timestamp')
       .eq('entrada_id', activeEntrada.id)
       .order('evidencia_n', { ascending: true });
 
-    if (!error) setRemoteFollowups((data || []) as FollowUpRow[]);
+    if (!qErr) setRemoteFollowups((data || []) as FollowUpRow[]);
     setIsLoadingFollowups(false);
   }, [activeEntrada?.id, user?.id]);
 
@@ -304,8 +552,14 @@ export default function OperarioMaquinaria() {
   // Cuando vuelve internet: sync + refresh
   useEffect(() => {
     const onOnline = async () => {
+      if (!user?.id) return;
+
       try {
+        // ✅ sync evidencias
         await syncPendingFollowups?.();
+
+        // ✅ sync revisiones (metadata)
+        await syncPendingRevisions(user.id);
       } catch (e) {
         console.error(e);
       } finally {
@@ -317,7 +571,7 @@ export default function OperarioMaquinaria() {
 
     window.addEventListener('online', onOnline);
     return () => window.removeEventListener('online', onOnline);
-  }, [syncPendingFollowups, getTodayRecords, loadRevisionStatus, loadFollowups]);
+  }, [user?.id, syncPendingFollowups, getTodayRecords, loadRevisionStatus, loadFollowups]);
 
   // Unificar evidencias (local pisa remoto)
   const followups = useMemo(() => {
@@ -330,7 +584,7 @@ export default function OperarioMaquinaria() {
   const hasFollow1 = followups.some((f) => f.evidencia_n === 1);
   const hasFollow2 = followups.some((f) => f.evidencia_n === 2);
 
-  // Evidencia 1: habilitada a las 3h desde la entrada (pero SOLO si revisión inicio está completa)
+  // Evidencia 1 habilitada a las X desde la entrada (solo si revisión inicio completa)
   const follow1EnabledInfo = useMemo(() => {
     void tick;
 
@@ -353,34 +607,48 @@ export default function OperarioMaquinaria() {
   // Evidencia 2: solo después de evidencia 1, y revisión inicio completa
   const follow2Enabled = !!activeEntrada && rev.inicioComplete && hasFollow1;
 
-  // Revisión FIN: solo después de evidencias 1 y 2
+  // Revisión FIN: solo después de ev1 y ev2
   const finRevisionEnabled = !!activeEntrada && rev.inicioComplete && hasFollow1 && hasFollow2;
 
-  // Navegación a revisión (inicio/fin)
-  const goRevision = (tipo: RevisionTipo) => {
-    if (!activeEntrada?.id) {
+  // ✅ Crear registro revision_maquinaria (online u offline) antes de navegar
+  const goRevision = async (tipo: RevisionTipo) => {
+    if (!activeEntrada?.id || !user?.id) {
       showError('entrada', 'Primero debes marcar la ENTRADA para iniciar.');
       return;
     }
 
-    // 🔒 Secuencias
-    if (tipo === 'inicio') {
-      // ok: solo requiere entrada
-      navigate(`/OperarioMaquinaria/${tipo}?entrada_id=${activeEntrada.id}`);
+    // secuencia
+    if (tipo === 'fin') {
+      if (!rev.inicioComplete) {
+        showError('entrada', 'Debes completar la revisión de INICIO antes de la revisión de FIN.');
+        return;
+      }
+      if (!hasFollow1 || !hasFollow2) {
+        showError('entrada', 'Debes completar Evidencia 1 y Evidencia 2 antes de la revisión de FIN.');
+        return;
+      }
+    }
+
+    // ✅ aquí se crea el registro con GPS+ubicación y se obtiene revisionId
+    const created = await createRevisionRecord({
+      userId: user.id,
+      entradaId: activeEntrada.id,
+      tipo,
+      equipoCodigo,
+      // ⚠️ si no tienes hook de geolocalización aquí, importa useGeolocation y pásalo
+      getCurrentPosition: async () => {
+        // fallback mínimo: sin GPS
+        return { latitude: 0, longitude: 0, accuracy: 0 };
+      },
+    });
+
+    if (!created.success) {
+      showError('entrada', created.error || 'No se pudo iniciar la revisión.');
       return;
     }
 
-    // fin: requiere inicio + evidencias 1 y 2
-    if (!rev.inicioComplete) {
-      showError('entrada', 'Debes completar la revisión de INICIO antes de la revisión de FIN.');
-      return;
-    }
-    if (!hasFollow1 || !hasFollow2) {
-      showError('entrada', 'Debes completar Evidencia 1 y Evidencia 2 antes de la revisión de FIN.');
-      return;
-    }
-
-    navigate(`/OperarioMaquinaria/${tipo}?entrada_id=${activeEntrada.id}`);
+    // navegar con revision_id (IMPORTANTE para que la pantalla de fotos use ese id)
+    navigate(`/OperarioMaquinaria/${tipo}?entrada_id=${activeEntrada.id}&revision_id=${created.revisionId}`);
   };
 
   // Marcar entrada/salida
@@ -389,7 +657,7 @@ export default function OperarioMaquinaria() {
       // 🔒 Salida requiere: inicio + ev1 + ev2 + fin
       if (tipo === 'salida') {
         if (!rev.inicioComplete) {
-          showError('salida', 'Debes completar la Revisión de INICIO (fotos de maquinaria) antes de marcar la salida.');
+          showError('salida', 'Debes completar la Revisión de INICIO antes de marcar la salida.');
           return;
         }
         if (!hasFollow1 || !hasFollow2) {
@@ -397,7 +665,7 @@ export default function OperarioMaquinaria() {
           return;
         }
         if (!rev.finComplete) {
-          showError('salida', 'Debes completar la Revisión de FIN (fotos de maquinaria) antes de marcar la salida.');
+          showError('salida', 'Debes completar la Revisión de FIN antes de marcar la salida.');
           return;
         }
       }
@@ -463,7 +731,7 @@ export default function OperarioMaquinaria() {
 
       const blob = await capturePhoto();
 
-      // OFFLINE: primero local para no bloquear salida por flapping
+      // OFFLINE: primero local
       const localRow: FollowUpRow = {
         evidencia_n: n,
         foto_url: 'local://pending',
@@ -478,13 +746,12 @@ export default function OperarioMaquinaria() {
       setLocalFollowups(next);
 
       const res = await markFollowUp(n, blob, activeEntrada.id);
-
       if (!res?.success) {
         showError('entrada', 'No se pudo guardar la evidencia. Intenta de nuevo.');
         return;
       }
 
-      // Si hay red, intenta sync inmediato
+      // si hay red, intenta sync inmediato
       if (navigator.onLine) {
         try {
           await syncPendingFollowups?.();
@@ -550,7 +817,6 @@ export default function OperarioMaquinaria() {
           <LastRecordCard record={lastRecord} />
         </div>
 
-        {/* ✅ Orden exacto del flujo */}
         <div className="space-y-3 pt-4">
           {/* 1) ENTRADA */}
           <AttendanceButton
@@ -565,7 +831,7 @@ export default function OperarioMaquinaria() {
           {/* 2) REVISION INICIO */}
           <Button
             className="w-full"
-            onClick={() => goRevision('inicio')}
+            onClick={() => void goRevision('inicio')}
             disabled={isSubmitting || !activeEntrada || rev.inicioComplete}
           >
             <ClipboardCheck className="h-4 w-4 mr-2" />
@@ -577,14 +843,16 @@ export default function OperarioMaquinaria() {
           {/* 3) EVIDENCIA 1 */}
           <Button
             className="w-full"
-            onClick={() => handleFollowUp(1)}
+            onClick={() => void handleFollowUp(1)}
             disabled={isSubmitting || !activeEntrada || hasFollow1 || !follow1EnabledInfo.enabled}
           >
             <Camera className="h-4 w-4 mr-2" />
             {hasFollow1
               ? 'Evidencia 1 completada ✅'
               : rev.inicioComplete
-                ? `Registrar evidencia 1 en ${follow1EnabledInfo.remainingText}`
+                ? follow1EnabledInfo.enabled
+                  ? 'Registrar evidencia 1'
+                  : `Registrar evidencia 1 en ${follow1EnabledInfo.remainingText}`
                 : 'Evidencia 1 (requiere revisión INICIO)'}
           </Button>
 
@@ -592,7 +860,7 @@ export default function OperarioMaquinaria() {
           <Button
             className="w-full"
             variant="outline"
-            onClick={() => handleFollowUp(2)}
+            onClick={() => void handleFollowUp(2)}
             disabled={isSubmitting || !activeEntrada || hasFollow2 || !follow2Enabled}
           >
             <Camera className="h-4 w-4 mr-2" />
@@ -603,7 +871,7 @@ export default function OperarioMaquinaria() {
           <Button
             className="w-full"
             variant="outline"
-            onClick={() => goRevision('fin')}
+            onClick={() => void goRevision('fin')}
             disabled={isSubmitting || !activeEntrada || rev.finComplete || !finRevisionEnabled}
           >
             <ClipboardCheck className="h-4 w-4 mr-2" />
@@ -613,20 +881,14 @@ export default function OperarioMaquinaria() {
           </Button>
 
           {/* 6) SALIDA */}
-          <AttendanceButton
-            type="salida"
-            onClick={() => handleMarkAttendance('salida')}
-            disabled={isSubmitting || !canExit}
-          >
+          <AttendanceButton type="salida" onClick={() => handleMarkAttendance('salida')} disabled={isSubmitting || !canExit}>
             <LogOut className="h-7 w-7" />
             <span>{canExit ? 'Marcar Salida' : 'Marcar Salida (completa todo el flujo)'}</span>
           </AttendanceButton>
 
-          {/* Estado resumen */}
           <div className="text-xs text-muted-foreground space-y-1">
             <p>
-              Revisión INICIO: {rev.inicioComplete ? '✅' : '❌'}{' '}
-              {rev.loading ? ' • Actualizando…' : ''}
+              Revisión INICIO: {rev.inicioComplete ? '✅' : '❌'} {rev.loading ? ' • Actualizando…' : ''}
             </p>
             <p>
               Evidencias: {hasFollow1 ? '✅ 1' : '❌ 1'} / {hasFollow2 ? '✅ 2' : '❌ 2'}
@@ -636,12 +898,9 @@ export default function OperarioMaquinaria() {
           </div>
         </div>
 
-        {/* Resumen */}
         {todayRecords.length > 0 && (
           <div className="pt-4">
-            <h3 className="text-sm font-medium text-muted-foreground mb-2">
-              Registros de hoy ({todayRecords.length})
-            </h3>
+            <h3 className="text-sm font-medium text-muted-foreground mb-2">Registros de hoy ({todayRecords.length})</h3>
             <div className="space-y-2">
               {todayRecords.slice(0, 6).map((record) => (
                 <div key={record.id} className="flex items-center justify-between p-3 rounded-lg bg-muted/50">
@@ -652,9 +911,7 @@ export default function OperarioMaquinaria() {
                   >
                     {record.tipo_registro === 'entrada' ? '🟢' : '🔴'} {record.tipo_registro.toUpperCase()}
                   </span>
-                  <span className="text-sm text-muted-foreground">
-                    {format(new Date(record.timestamp), 'HH:mm')}
-                  </span>
+                  <span className="text-sm text-muted-foreground">{format(new Date(record.timestamp), 'HH:mm')}</span>
                 </div>
               ))}
             </div>
@@ -684,9 +941,7 @@ export default function OperarioMaquinaria() {
                 <p className="text-base font-semibold">{geoInfo.hac_ste}</p>
               </div>
               {geoCoords?.accuracy != null && (
-                <p className="text-xs text-muted-foreground">
-                  Precisión GPS: ±{Math.round(geoCoords.accuracy)} m
-                </p>
+                <p className="text-xs text-muted-foreground">Precisión GPS: ±{Math.round(geoCoords.accuracy)} m</p>
               )}
             </div>
           ) : (
