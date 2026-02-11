@@ -1,3 +1,4 @@
+// src/pages/SupervisorDashboard.tsx
 import { useEffect, useMemo, useState } from 'react';
 import { format } from 'date-fns';
 import { supabase } from '@/integrations/supabase/client';
@@ -21,7 +22,23 @@ import {
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from '@/components/ui/dialog';
+
 type EventType = 'entrada' | 'salida' | 'rev_inicio' | 'rev_fin';
+
+type FotoTipo =
+  | 'frente'
+  | 'lado_derecho'
+  | 'lado_izquierdo'
+  | 'trasera'
+  | 'cabina';
 
 interface SupervisorEventRow {
   id: string;
@@ -42,12 +59,24 @@ interface SupervisorEventRow {
   hac_ste?: string | null;
   suerte_nom?: string | null;
 
-  // revisión (opcional)
+  // revisión
+  rev_id_real?: string | null; // id real de revision_maquinaria
   rev_fotos_count?: number;
   rev_fotos_required?: number;
 
   profiles?: { nombre: string } | null;
 }
+
+type RevPhotoRow = {
+  revision_id: string;
+  foto_tipo: FotoTipo;
+  foto_path: string;
+};
+
+type SignedPhoto = {
+  foto_tipo: FotoTipo;
+  signedUrl: string;
+};
 
 export default function SupervisorDashboard() {
   const { signOut } = useAuth();
@@ -64,10 +93,65 @@ export default function SupervisorDashboard() {
 
   const REQUIRED_MAQUINARIA_PHOTOS = 5;
 
+  // -------- Modal fotos revisión ----------
+  const [revModalOpen, setRevModalOpen] = useState(false);
+  const [revModalTitle, setRevModalTitle] = useState<string>('Fotos de revisión');
+  const [revModalLoading, setRevModalLoading] = useState(false);
+  const [revModalError, setRevModalError] = useState<string | null>(null);
+  const [revPhotos, setRevPhotos] = useState<SignedPhoto[]>([]);
+
   const fetchUsers = async () => {
     const { data, error } = await supabase.from('profiles').select('id, nombre').eq('activo', true);
     if (error) console.error(error);
     setUsers(data || []);
+  };
+
+  // firmar URL (bucket privado recomendado)
+  async function signPhoto(path: string) {
+    const { data, error } = await supabase.storage
+      .from('attendance-photos')
+      .createSignedUrl(path, 60 * 30); // 30 min
+
+    if (error) throw error;
+    return data.signedUrl;
+  }
+
+  // abrir modal y cargar 5 fotos por revision_id
+  const openRevisionPhotos = async (revisionId: string, label: string) => {
+    setRevModalTitle(label);
+    setRevModalOpen(true);
+    setRevModalLoading(true);
+    setRevModalError(null);
+    setRevPhotos([]);
+
+    try {
+      // trae paths
+      const { data, error } = await supabase
+        .from('revision_maquinaria_fotos')
+        .select('revision_id,foto_tipo,foto_path')
+        .eq('revision_id', revisionId);
+
+      if (error) throw error;
+
+      const rows = (data || []) as RevPhotoRow[];
+      // orden “bonito”
+      const order: FotoTipo[] = ['frente', 'lado_derecho', 'lado_izquierdo', 'trasera', 'cabina'];
+      rows.sort((a, b) => order.indexOf(a.foto_tipo) - order.indexOf(b.foto_tipo));
+
+      // firmar todas
+      const signed: SignedPhoto[] = [];
+      for (const r of rows) {
+        const url = await signPhoto(r.foto_path);
+        signed.push({ foto_tipo: r.foto_tipo, signedUrl: url });
+      }
+
+      setRevPhotos(signed);
+    } catch (e: any) {
+      console.error(e);
+      setRevModalError(e?.message ? String(e.message) : 'No se pudieron cargar las fotos de la revisión');
+    } finally {
+      setRevModalLoading(false);
+    }
   };
 
   const fetchRecords = async () => {
@@ -92,7 +176,7 @@ export default function SupervisorDashboard() {
       id: r.id,
       user_id: r.user_id,
       fecha: r.fecha,
-      tipo_evento: r.tipo_registro, // 'entrada' | 'salida'
+      tipo_evento: r.tipo_registro,
       timestamp: r.timestamp,
       latitud: r.latitud ?? null,
       longitud: r.longitud ?? null,
@@ -105,20 +189,22 @@ export default function SupervisorDashboard() {
     }));
 
     // ----------------- 2) Revisiones (inicio/fin) -----------------
-    // Las revisiones se muestran siempre (no dependen de typeFilter)
+    // ✅ AQUÍ ESTABA EL PROBLEMA: no estabas trayendo geo ni gps
     let revQuery = supabase
       .from('revision_maquinaria')
-      .select('id,user_id,tipo,created_at')
-      .gte('created_at', `${dateFilter} 00:00:00`)
-      .lte('created_at', `${dateFilter} 23:59:59`)
-      .order('created_at', { ascending: false });
+      .select(
+        'id,user_id,tipo,timestamp,created_at,latitud,longitud,precision_gps,fuera_zona,hac_ste,suerte_nom'
+      )
+      .gte('timestamp', `${dateFilter} 00:00:00`)
+      .lte('timestamp', `${dateFilter} 23:59:59`)
+      .order('timestamp', { ascending: false });
 
     if (userFilter !== 'all') revQuery = revQuery.eq('user_id', userFilter);
 
     const { data: revData, error: revErr } = await revQuery;
     if (revErr) console.error(revErr);
 
-    // (Opcional) contar fotos por revisión
+    // contar fotos por revisión (y opcionalmente usarlo en UI)
     const revIds = (revData || []).map((r: any) => r.id);
     const revCountMap = new Map<string, number>();
 
@@ -136,13 +222,25 @@ export default function SupervisorDashboard() {
     }
 
     const revisionRows: SupervisorEventRow[] = (revData || []).map((r: any) => ({
-      id: `rev_${r.id}`, // para no chocar con ids de asistencia
+      id: `rev_${r.id}`,
+      rev_id_real: r.id,
       user_id: r.user_id,
       fecha: dateFilter,
       tipo_evento: r.tipo === 'inicio' ? 'rev_inicio' : 'rev_fin',
-      timestamp: r.created_at,
+      // ✅ usa timestamp (siempre debería estar) y fallback a created_at
+      timestamp: r.timestamp ?? r.created_at,
+      // ✅ ubicación + gps de la revisión
+      latitud: r.latitud ?? null,
+      longitud: r.longitud ?? null,
+      precision_gps: r.precision_gps ?? null,
+      fuera_zona: r.fuera_zona ?? false,
+      hac_ste: r.hac_ste ?? null,
+      suerte_nom: r.suerte_nom ?? null,
       rev_fotos_count: revCountMap.get(r.id) ?? 0,
       rev_fotos_required: REQUIRED_MAQUINARIA_PHOTOS,
+      // foto_url queda null: se verá con modal
+      foto_url: null,
+      es_inconsistente: false,
     }));
 
     // ----------------- 3) Merge + perfiles -----------------
@@ -157,7 +255,11 @@ export default function SupervisorDashboard() {
     }
 
     const userIds = [...new Set(mergedAll.map((r) => r.user_id))];
-    const { data: profilesData, error: profErr } = await supabase.from('profiles').select('id, nombre').in('id', userIds);
+    const { data: profilesData, error: profErr } = await supabase
+      .from('profiles')
+      .select('id, nombre')
+      .in('id', userIds);
+
     if (profErr) console.error(profErr);
 
     const profilesMap = new Map(profilesData?.map((p: any) => [p.id, p]) || []);
@@ -181,7 +283,7 @@ export default function SupervisorDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateFilter, userFilter, typeFilter]);
 
-  // ---------------------- STATS (solo asistencia para entradas/salidas) ----------------------
+  // ---------------------- STATS (solo asistencia) ----------------------
   const stats = useMemo(() => {
     const totalActivosPerfil = users.length;
 
@@ -196,7 +298,6 @@ export default function SupervisorDashboard() {
     const entradasUnicas = new Set(attendanceOnly.filter((r) => r.tipo_evento === 'entrada').map((r) => r.user_id));
     const salidasUnicas = new Set(attendanceOnly.filter((r) => r.tipo_evento === 'salida').map((r) => r.user_id));
 
-    // Activos sin salida: último evento de asistencia por usuario = entrada
     const lastEventByUser = new Map<string, SupervisorEventRow>();
     const ordered = [...attendanceOnly].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
     for (const r of ordered) lastEventByUser.set(r.user_id, r);
@@ -216,7 +317,7 @@ export default function SupervisorDashboard() {
     };
   }, [records, users]);
 
-  // ✅ CSV: incluye revisiones también
+  // ✅ CSV: incluye revisiones también (ya incluye ubicación de revisiones)
   const exportCSV = () => {
     const headers = [
       'Fecha',
@@ -241,7 +342,9 @@ export default function SupervisorDashboard() {
       r.latitud != null && r.longitud != null ? `${r.latitud},${r.longitud}` : 'Sin GPS',
       r.precision_gps != null ? String(Math.round(r.precision_gps)) : '—',
       r.es_inconsistente ? 'Sí' : 'No',
-      typeof r.rev_fotos_count === 'number' ? `${r.rev_fotos_count}/${r.rev_fotos_required ?? REQUIRED_MAQUINARIA_PHOTOS}` : '—',
+      typeof r.rev_fotos_count === 'number'
+        ? `${r.rev_fotos_count}/${r.rev_fotos_required ?? REQUIRED_MAQUINARIA_PHOTOS}`
+        : '—',
     ]);
 
     const csv = [headers, ...rows].map((row) => row.join(',')).join('\n');
@@ -272,6 +375,35 @@ export default function SupervisorDashboard() {
           <span className="text-xs text-muted-foreground">({Math.min(count, req)}/{req})</span>
         ) : null}
       </span>
+    );
+  };
+
+  const renderFotoCell = (r: SupervisorEventRow) => {
+    // asistencia: usa foto_url pública/guardada
+    if (r.tipo_evento === 'entrada' || r.tipo_evento === 'salida') {
+      return r.foto_url ? (
+        <a href={r.foto_url} target="_blank" rel="noreferrer" className="text-primary underline">
+          Ver
+        </a>
+      ) : (
+        '—'
+      );
+    }
+
+    // revisiones: modal con signed urls
+    const revId = r.rev_id_real;
+    const label = r.tipo_evento === 'rev_inicio' ? 'Fotos revisión INICIO' : 'Fotos revisión FIN';
+
+    if (!revId) return '—';
+
+    return (
+      <Button
+        variant="link"
+        className="px-0"
+        onClick={() => openRevisionPhotos(revId, label)}
+      >
+        Ver
+      </Button>
     );
   };
 
@@ -445,18 +577,14 @@ export default function SupervisorDashboard() {
                       </TableCell>
 
                       <TableCell>
-                        {r.latitud != null ? `±${Math.round(r.precision_gps || 0)}m` : '—'}
+                        {r.latitud != null && r.precision_gps != null
+                          ? `±${Math.round(r.precision_gps)}m`
+                          : r.latitud != null
+                            ? 'GPS'
+                            : '—'}
                       </TableCell>
 
-                      <TableCell>
-                        {r.foto_url ? (
-                          <a href={r.foto_url} target="_blank" rel="noreferrer" className="text-primary underline">
-                            Ver
-                          </a>
-                        ) : (
-                          '—'
-                        )}
-                      </TableCell>
+                      <TableCell>{renderFotoCell(r)}</TableCell>
                     </TableRow>
                   ))}
 
@@ -477,6 +605,43 @@ export default function SupervisorDashboard() {
           * “Inactivos” se calcula usando <code>profiles.activo=true</code> menos “usuarios con entrada” del día (solo asistencia).
         </p>
       </main>
+
+      {/* Modal fotos revisión */}
+      <Dialog open={revModalOpen} onOpenChange={setRevModalOpen}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>{revModalTitle}</DialogTitle>
+            <DialogDescription>
+              Se muestran URLs firmadas (expiran). Si aparece 403, revisa policies de Storage/DB para supervisor.
+            </DialogDescription>
+          </DialogHeader>
+
+          {revModalLoading ? (
+            <div className="py-8 flex items-center justify-center">
+              <Loader2 className="h-6 w-6 animate-spin" />
+            </div>
+          ) : revModalError ? (
+            <div className="p-3 rounded bg-muted text-sm">{revModalError}</div>
+          ) : revPhotos.length === 0 ? (
+            <div className="p-3 rounded bg-muted text-sm">No hay fotos para esta revisión.</div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {revPhotos.map((p) => (
+                <div key={p.foto_tipo} className="rounded border p-2">
+                  <div className="text-xs font-medium mb-2 capitalize">{p.foto_tipo.replace('_', ' ')}</div>
+                  <a href={p.signedUrl} target="_blank" rel="noreferrer" className="text-primary underline text-sm">
+                    Ver imagen
+                  </a>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button onClick={() => setRevModalOpen(false)}>Cerrar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
