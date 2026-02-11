@@ -1,7 +1,7 @@
 // src/pages/OperarioMaquinariaFin.tsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Camera, CheckCircle, ArrowLeft } from "lucide-react";
+import { Camera, CheckCircle, ArrowLeft, MapPin } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
@@ -23,7 +23,12 @@ const FOTO_TIPOS: { key: FotoTipo; label: string }[] = [
   { key: "cabina", label: "Foto interior de cabina" },
 ];
 
-// ✅ cache local geo para que no repita GPS/RPC
+// ------------------ Helpers ------------------
+function toIsoDate(d = new Date()) {
+  return d.toISOString().split("T")[0];
+}
+
+// ✅ cache local geo para que no repita GPS/RPC (y sirve offline)
 type GeoInfo = {
   lat: number | null;
   lon: number | null;
@@ -31,10 +36,13 @@ type GeoInfo = {
   hac_ste: string | null;
   suerte_nom: string | null;
   fuera_zona: boolean;
+  at: string; // timestamp cuando se capturó
 };
+
 function geoCacheKey(userId: string, entradaId: string, tipo: "inicio" | "fin") {
   return `maq_geo_cache:${userId}:${entradaId}:${tipo}`;
 }
+
 function readGeoCache(userId: string, entradaId: string, tipo: "inicio" | "fin"): GeoInfo | null {
   try {
     const raw = localStorage.getItem(geoCacheKey(userId, entradaId, tipo));
@@ -44,12 +52,14 @@ function readGeoCache(userId: string, entradaId: string, tipo: "inicio" | "fin")
     return null;
   }
 }
+
 function writeGeoCache(userId: string, entradaId: string, tipo: "inicio" | "fin", geo: GeoInfo) {
   try {
     localStorage.setItem(geoCacheKey(userId, entradaId, tipo), JSON.stringify(geo));
   } catch {}
 }
-async function resolveGeo(lat: number, lon: number): Promise<{ hac_ste: string; suerte_nom: string } | null> {
+
+async function resolveGeoRPC(lat: number, lon: number): Promise<{ hac_ste: string; suerte_nom: string } | null> {
   const { data, error } = await supabase.rpc("get_hacienda_by_point", { lat, lon });
   if (error || !data || data.length === 0) return null;
   return { suerte_nom: data[0].nom, hac_ste: data[0].hac_ste };
@@ -69,25 +79,28 @@ export default function OperarioMaquinariaFin() {
     {} as Record<FotoTipo, boolean>
   );
   const [loading, setLoading] = useState(false);
+  const [creating, setCreating] = useState(false);
+
+  const [geo, setGeo] = useState<GeoInfo | null>(null);
+  const [geoMsg, setGeoMsg] = useState<string | null>(null);
 
   const completas = useMemo(
     () => FOTO_TIPOS.filter((f) => subidas[f.key]).length,
     [subidas]
   );
 
-  /* ---------------------------------------------------------
-   * 1️⃣ Crear o recuperar revisión FIN
-   * ✅ arregla el error "multiple rows returned" evitando maybeSingle()
-   * ✅ guarda ubicación + nombre (hac_ste/suerte_nom) + hora (recorded_at)
-   * ---------------------------------------------------------*/
+  /**
+   * 1) Crear o recuperar revisión FIN
+   * - Evita maybeSingle() para no caer en "multiple rows returned"
+   * - Guarda hora + ubicación + nombre (hac_ste / suerte_nom)
+   */
   useEffect(() => {
     if (!user?.id || !entradaId) return;
 
     const loadOrCreateRevision = async () => {
+      setCreating(true);
       try {
-        setLoading(true);
-
-        // 1) Buscar existente (si hay duplicadas, toma la más reciente)
+        // 1) buscar existente (toma la más reciente si hay duplicadas)
         const { data: existing, error: selErr } = await supabase
           .from("revision_maquinaria")
           .select("id, created_at, updated_at")
@@ -103,12 +116,17 @@ export default function OperarioMaquinariaFin() {
           return;
         }
 
-        if (existing && existing.length > 0 && existing[0]?.id) {
+        if (existing?.[0]?.id) {
           setRevisionId(existing[0].id);
+
+          // si hay geo cache, lo mostramos
+          const cached = readGeoCache(user.id, entradaId, "fin");
+          if (cached) setGeo(cached);
+
           return;
         }
 
-        // 2) Geo best-effort
+        // 2) Geo best-effort + cache
         let geoPayload: GeoInfo = {
           lat: null,
           lon: null,
@@ -116,6 +134,7 @@ export default function OperarioMaquinariaFin() {
           hac_ste: null,
           suerte_nom: null,
           fuera_zona: false,
+          at: new Date().toISOString(),
         };
 
         const cached = readGeoCache(user.id, entradaId, "fin");
@@ -127,8 +146,9 @@ export default function OperarioMaquinariaFin() {
             const hasCoords = pos?.latitude != null && pos?.longitude != null;
 
             if (hasCoords) {
+              // ⚠️ Resolver nombre SOLO si hay internet (RPC)
               const resolved = navigator.onLine
-                ? await resolveGeo(pos.latitude, pos.longitude)
+                ? await resolveGeoRPC(pos.latitude, pos.longitude)
                 : null;
 
               geoPayload = {
@@ -138,18 +158,25 @@ export default function OperarioMaquinariaFin() {
                 hac_ste: resolved?.hac_ste ?? null,
                 suerte_nom: resolved?.suerte_nom ?? null,
                 fuera_zona: resolved ? false : true,
+                at: new Date().toISOString(),
               };
+
+              if (!resolved) setGeoMsg("GPS OK, pero fuera de una suerte/hacienda (o sin internet para resolver nombre).");
+              else setGeoMsg(null);
+            } else {
+              setGeoMsg("No se pudo obtener GPS (sin coordenadas).");
             }
           } catch {
-            // si GPS falla no rompe
+            setGeoMsg("No se pudo obtener GPS. Revisa permisos de ubicación.");
           }
 
           writeGeoCache(user.id, entradaId, "fin", geoPayload);
         }
 
-        // 3) Crear revisión FIN (con ubicación + hora)
-        // ⚠️ Si aún NO has agregado estas columnas a revision_maquinaria,
-        // comenta los campos geo* hasta hacer la migración.
+        setGeo(geoPayload);
+
+        // 3) Crear revisión FIN con las columnas que SÍ existen en tu tabla:
+        // timestamp, latitud, longitud, precision_gps, fuera_zona, hac_ste, suerte_nom
         const { data: created, error: insErr } = await supabase
           .from("revision_maquinaria")
           .insert({
@@ -157,8 +184,8 @@ export default function OperarioMaquinariaFin() {
             entrada_id: entradaId,
             tipo: "fin",
             equipo_codigo: "SIN_DEFINIR",
-            // ✅ hora
-            recorded_at: new Date().toISOString(),
+            // ✅ hora real del registro de inicio de revisión
+            timestamp: new Date().toISOString(),
             // ✅ ubicación + nombre
             latitud: geoPayload.lat,
             longitud: geoPayload.lon,
@@ -177,47 +204,64 @@ export default function OperarioMaquinariaFin() {
 
         setRevisionId(created.id);
       } finally {
-        setLoading(false);
+        setCreating(false);
       }
     };
 
     loadOrCreateRevision();
   }, [user?.id, entradaId, getCurrentPosition]);
 
-  /* ---------------------------------------------------------
-   * 2️⃣ Cargar estado de fotos ya subidas (si vuelve a entrar)
-   * ---------------------------------------------------------*/
+  /**
+   * 2) NO cargamos fotos desde DB (porque operario NO debe tener SELECT).
+   * Si quieres "persistencia visual" al re-entrar, lo hacemos con localStorage.
+   */
   useEffect(() => {
-    if (!revisionId || !user?.id) return;
+    if (!user?.id || !entradaId) return;
 
-    const loadUploaded = async () => {
-      const { data, error } = await supabase
-        .from("revision_maquinaria_fotos")
-        .select("foto_tipo")
-        .eq("revision_id", revisionId);
-
-      if (error) return;
-
+    const key = `maq_fotos_local:${user.id}:${entradaId}:fin`;
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Record<string, boolean>;
       const next: Record<FotoTipo, boolean> = {} as any;
-      for (const row of data || []) {
-        const k = row.foto_tipo as FotoTipo;
-        next[k] = true;
+
+      for (const f of FOTO_TIPOS) {
+        if (parsed?.[f.key]) next[f.key] = true;
       }
       setSubidas((prev) => ({ ...prev, ...next }));
-    };
+    } catch {
+      // ignore
+    }
+  }, [user?.id, entradaId]);
 
-    loadUploaded();
-  }, [revisionId, user?.id]);
+  const persistLocalSubidas = useCallback(
+    (next: Record<FotoTipo, boolean>) => {
+      if (!user?.id || !entradaId) return;
+      const key = `maq_fotos_local:${user.id}:${entradaId}:fin`;
+      try {
+        localStorage.setItem(key, JSON.stringify(next));
+      } catch {}
+    },
+    [user?.id, entradaId]
+  );
 
-  /* ---------------------------------------------------------
-   * 3️⃣ Capturar y subir foto (UPLOAD + METADATA)
-   * ✅ path incluye revisionId para evitar colisiones
-   * ---------------------------------------------------------*/
+  /**
+   * 3) Capturar y subir foto (UPLOAD + METADATA)
+   * - path: userId/.../fin/revisionId/tipo.webp
+   * - upsert requiere UNIQUE(revision_id, foto_tipo)
+   */
   const handleCapture = async (tipo: FotoTipo) => {
     if (!revisionId || !user?.id) return;
 
     try {
       setLoading(true);
+
+      // ✅ debug rápido por si viene anon
+      const { data: s } = await supabase.auth.getSession();
+      if (!s.session) {
+        console.error("No hay session -> request está yendo como anon");
+        return;
+      }
 
       const blob = await capturePhoto();
       if (!blob) {
@@ -225,11 +269,10 @@ export default function OperarioMaquinariaFin() {
         return;
       }
 
-      const today = new Date().toISOString().split("T")[0];
-
-      // ✅ IMPORTANTE: /fin/ + revisionId
+      const today = toIsoDate();
       const filePath = `${user.id}/maquinaria/${today}/fin/${revisionId}/${tipo}.webp`;
 
+      // 1) upload storage
       const { error: uploadErr } = await supabase.storage
         .from("attendance-photos")
         .upload(filePath, blob, {
@@ -242,6 +285,7 @@ export default function OperarioMaquinariaFin() {
         return;
       }
 
+      // 2) metadata DB (sin URL)
       const { error: upsertErr } = await supabase
         .from("revision_maquinaria_fotos")
         .upsert(
@@ -250,9 +294,8 @@ export default function OperarioMaquinariaFin() {
             user_id: user.id,
             foto_tipo: tipo,
             foto_path: filePath,
-            foto_url: null, // ✅ mantener null
+            foto_url: null,
           },
-          // ⚠️ Requiere UNIQUE(revision_id, foto_tipo) en DB
           { onConflict: "revision_id,foto_tipo" } as any
         );
 
@@ -261,21 +304,22 @@ export default function OperarioMaquinariaFin() {
         return;
       }
 
-      setSubidas((prev) => ({ ...prev, [tipo]: true }));
+      const next = { ...subidas, [tipo]: true } as Record<FotoTipo, boolean>;
+      setSubidas(next);
+      persistLocalSubidas(next);
     } finally {
       setLoading(false);
     }
   };
 
-  /* ---------------------------------------------------------
-   * 4️⃣ Finalizar revisión FIN (offline OK)
-   * ---------------------------------------------------------*/
+  /**
+   * 4) Finalizar revisión FIN (offline OK)
+   */
   const finalizar = () => {
     if (completas !== FOTO_TIPOS.length) return;
 
-    const today = new Date().toISOString().split("T")[0];
+    const today = toIsoDate();
     localStorage.setItem(`maq_revision_complete:${user?.id}:${today}:fin`, "1");
-
     navigate("/OperarioMaquinaria");
   };
 
@@ -291,6 +335,36 @@ export default function OperarioMaquinariaFin() {
       <p className="text-sm text-muted-foreground">
         Captura las <strong>5 fotos obligatorias</strong> al entregar la maquinaria.
       </p>
+
+      {/* Ubicación registrada al iniciar revisión FIN */}
+      <div className="rounded-lg border p-3 text-sm">
+        <div className="flex items-center gap-2 font-medium">
+          <MapPin className="h-4 w-4" />
+          Ubicación de la revisión
+        </div>
+
+        {creating ? (
+          <p className="text-muted-foreground mt-1">Guardando ubicación…</p>
+        ) : geo?.hac_ste || geo?.suerte_nom ? (
+          <div className="mt-2 space-y-1">
+            <div>
+              <span className="text-muted-foreground">Suerte:</span>{" "}
+              {geo?.suerte_nom ?? "—"}
+            </div>
+            <div>
+              <span className="text-muted-foreground">Hacienda/Suerte:</span>{" "}
+              {geo?.hac_ste ?? "—"}
+            </div>
+            {geo?.accuracy != null && (
+              <div className="text-xs text-muted-foreground">
+                Precisión GPS: ±{Math.round(geo.accuracy)} m
+              </div>
+            )}
+          </div>
+        ) : (
+          <p className="text-muted-foreground mt-1">{geoMsg ?? "Sin información de ubicación"}</p>
+        )}
+      </div>
 
       <div className="space-y-3">
         {FOTO_TIPOS.map((f) => (
@@ -315,11 +389,7 @@ export default function OperarioMaquinariaFin() {
         Progreso: {completas} / {FOTO_TIPOS.length}
       </p>
 
-      <Button
-        className="w-full"
-        disabled={completas !== FOTO_TIPOS.length}
-        onClick={finalizar}
-      >
+      <Button className="w-full" disabled={completas !== FOTO_TIPOS.length} onClick={finalizar}>
         Finalizar revisión fin
       </Button>
     </div>
