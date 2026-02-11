@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Camera, CheckCircle, ArrowLeft, MapPin } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -6,6 +6,13 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useCamera } from "@/hooks/useCamera";
 import { useGeolocation } from "@/hooks/useGeolocation";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 type FotoTipo =
   | "frente"
@@ -15,10 +22,10 @@ type FotoTipo =
   | "cabina";
 
 const FOTO_TIPOS: { key: FotoTipo; label: string }[] = [
-  { key: "frente", label: "Foto frontal" },
-  { key: "lado_derecho", label: "Foto lado derecho" },
-  { key: "lado_izquierdo", label: "Foto lado izquierdo" },
-  { key: "trasera", label: "Foto trasera" },
+  { key: "frente", label: "Foto frontal maquina" },
+  { key: "lado_derecho", label: "Foto lado derecho maquina" },
+  { key: "lado_izquierdo", label: "Foto lado izquierdo maquina" },
+  { key: "trasera", label: "Foto trasera maquina" },
   { key: "cabina", label: "Foto interior de cabina" },
 ];
 
@@ -42,7 +49,11 @@ type GeoInfo = {
 function geoCacheKey(userId: string, entradaId: string, tipo: "inicio" | "fin") {
   return `maq_geo_cache:${userId}:${entradaId}:${tipo}`;
 }
-function readGeoCache(userId: string, entradaId: string, tipo: "inicio" | "fin"): GeoInfo | null {
+function readGeoCache(
+  userId: string,
+  entradaId: string,
+  tipo: "inicio" | "fin"
+): GeoInfo | null {
   try {
     const raw = localStorage.getItem(geoCacheKey(userId, entradaId, tipo));
     if (!raw) return null;
@@ -51,7 +62,12 @@ function readGeoCache(userId: string, entradaId: string, tipo: "inicio" | "fin")
     return null;
   }
 }
-function writeGeoCache(userId: string, entradaId: string, tipo: "inicio" | "fin", geo: GeoInfo) {
+function writeGeoCache(
+  userId: string,
+  entradaId: string,
+  tipo: "inicio" | "fin",
+  geo: GeoInfo
+) {
   try {
     localStorage.setItem(geoCacheKey(userId, entradaId, tipo), JSON.stringify(geo));
   } catch {}
@@ -76,11 +92,27 @@ function readLocalSubidas(userId: string, entradaId: string, tipo: "inicio" | "f
     return null;
   }
 }
-function writeLocalSubidas(userId: string, entradaId: string, tipo: "inicio" | "fin", subidas: Record<string, boolean>) {
+function writeLocalSubidas(
+  userId: string,
+  entradaId: string,
+  tipo: "inicio" | "fin",
+  subidas: Record<string, boolean>
+) {
   try {
     localStorage.setItem(fotosLocalKey(userId, entradaId, tipo), JSON.stringify(subidas));
   } catch {}
 }
+
+// ---------- Maestro maquinaria ----------
+type MaestroEquipo = {
+  cod_equipo: string;
+  descripcion_equipo: string | null;
+  marca?: string | null;
+  modelo?: string | null;
+  potencia?: string | null;
+  potencia_hp?: number | null;
+  seguimiento?: string | null;
+};
 
 export default function OperarioMaquinariaInicio() {
   const navigate = useNavigate();
@@ -101,6 +133,16 @@ export default function OperarioMaquinariaInicio() {
   const [geoInfo, setGeoInfo] = useState<GeoResult>(null);
   const [geoMsg, setGeoMsg] = useState<string | null>(null);
 
+  // Maestro maquinaria
+  const [equipos, setEquipos] = useState<MaestroEquipo[]>([]);
+  const [equiposLoading, setEquiposLoading] = useState(false);
+  const [equipoCodigo, setEquipoCodigo] = useState<string>(""); // seleccionado
+
+  const equipoSeleccionado = useMemo(
+    () => equipos.find((e) => e.cod_equipo === equipoCodigo) ?? null,
+    [equipos, equipoCodigo]
+  );
+
   // carga estado local de subidas (sin SELECT)
   useEffect(() => {
     if (!user?.id || !entradaId) return;
@@ -117,11 +159,36 @@ export default function OperarioMaquinariaInicio() {
     [subidas]
   );
 
+  // 0) Cargar maestro maquinaria para dropdown
+  useEffect(() => {
+    const loadMaestro = async () => {
+      setEquiposLoading(true);
+      try {
+        const { data, error } = await supabase
+          .from("maestro_maquinaria")
+          .select("cod_equipo, descripcion_equipo, marca, modelo, potencia_hp, seguimiento")
+          .eq("activo", true) // ✅ si tu tabla tiene activo
+          .order("cod_equipo", { ascending: true });
+
+        if (error) {
+          console.error("[maestro_maquinaria select]", error.message);
+          setEquipos([]);
+          return;
+        }
+        setEquipos((data || []) as MaestroEquipo[]);
+      } finally {
+        setEquiposLoading(false);
+      }
+    };
+
+    loadMaestro();
+  }, []);
+
   /**
    * 1) Crear o recuperar revisión INICIO
    * - Busca la más reciente
    * - Al crear: guarda timestamp + coords + (hac_ste/suerte_nom)
-   * - Cachea geo para evitar repetir GPS/RPC
+   * - Si ya existe: precarga equipo_codigo en el dropdown
    */
   useEffect(() => {
     if (!user?.id || !entradaId) return;
@@ -132,7 +199,7 @@ export default function OperarioMaquinariaInicio() {
         // 1) buscar existente (más reciente si hay duplicados)
         const { data: existing, error: selErr } = await supabase
           .from("revision_maquinaria")
-          .select("id, created_at, updated_at")
+          .select("id, created_at, updated_at, equipo_codigo")
           .eq("user_id", user.id)
           .eq("tipo", "inicio")
           .eq("entrada_id", entradaId)
@@ -147,6 +214,11 @@ export default function OperarioMaquinariaInicio() {
 
         if (existing?.[0]?.id) {
           setRevisionId(existing[0].id);
+
+          // ✅ precargar equipo si ya estaba guardado
+          if (existing[0].equipo_codigo && existing[0].equipo_codigo !== "SIN_DEFINIR") {
+            setEquipoCodigo(existing[0].equipo_codigo);
+          }
 
           // mostrar geo cache si existe
           const cached = readGeoCache(user.id, entradaId, "inicio");
@@ -212,7 +284,7 @@ export default function OperarioMaquinariaInicio() {
           writeGeoCache(user.id, entradaId, "inicio", geoPayload);
         }
 
-        // 3) crear revisión INICIO con columnas reales de tu tabla
+        // 3) crear revisión INICIO (equipo_codigo queda SIN_DEFINIR hasta que el usuario elija)
         const { data: created, error: insErr } = await supabase
           .from("revision_maquinaria")
           .insert({
@@ -245,6 +317,22 @@ export default function OperarioMaquinariaInicio() {
     loadOrCreateRevision();
   }, [user?.id, entradaId, getCurrentPosition]);
 
+  // ✅ Cuando el usuario selecciona un equipo: actualizar revision_maquinaria.equipo_codigo
+  const onSelectEquipo = async (cod: string) => {
+    setEquipoCodigo(cod);
+
+    if (!revisionId) return;
+
+    const { error } = await supabase
+      .from("revision_maquinaria")
+      .update({ equipo_codigo: cod })
+      .eq("id", revisionId);
+
+    if (error) {
+      console.error("[revision_maquinaria update equipo_codigo]", error.message);
+    }
+  };
+
   /**
    * 2) Capturar y subir foto (path incluye revisionId)
    */
@@ -254,7 +342,12 @@ export default function OperarioMaquinariaInicio() {
     try {
       setLoading(true);
 
-      // (opcional) debug: si no hay session, va como anon
+      // 🔒 obliga seleccionar equipo antes de fotos
+      if (!equipoCodigo) {
+        console.error("Debe seleccionar equipo antes de subir fotos");
+        return;
+      }
+
       const { data: s } = await supabase.auth.getSession();
       if (!s.session) {
         console.error("No hay session -> request está yendo como anon");
@@ -333,6 +426,48 @@ export default function OperarioMaquinariaInicio() {
         Debes capturar las <strong>5 fotos obligatorias</strong> de la maquinaria antes de continuar.
       </p>
 
+      {/* ✅ Equipo (dropdown) */}
+      <div className="rounded-lg border p-3 space-y-2">
+        <div className="text-sm font-medium">Equipo</div>
+
+        <Select
+          value={equipoCodigo}
+          onValueChange={onSelectEquipo}
+          disabled={equiposLoading || !revisionId}
+        >
+          <SelectTrigger>
+            <SelectValue
+              placeholder={equiposLoading ? "Cargando equipos..." : "Selecciona el código de equipo"}
+            />
+          </SelectTrigger>
+          <SelectContent>
+            {equipos.map((e) => (
+              <SelectItem key={e.cod_equipo} value={e.cod_equipo}>
+                {e.cod_equipo}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        <div className="text-xs text-muted-foreground">
+          {equipoSeleccionado ? (
+            <div className="space-y-1">
+              <div>
+                <span className="font-medium text-foreground">Descripción: </span>
+                {equipoSeleccionado.descripcion_equipo ?? "—"}
+              </div>
+              {(equipoSeleccionado.marca || equipoSeleccionado.modelo) && (
+                <div>
+                  {equipoSeleccionado.marca ?? "—"} {equipoSeleccionado.modelo ?? ""}
+                </div>
+              )}
+            </div>
+          ) : (
+            "Selecciona un equipo para ver la descripción."
+          )}
+        </div>
+      </div>
+
       {/* Ubicación registrada al iniciar revisión */}
       <div className="rounded-lg border p-3 text-sm">
         <div className="flex items-center gap-2 font-medium">
@@ -361,7 +496,7 @@ export default function OperarioMaquinariaInicio() {
             key={f.key}
             className="w-full justify-start"
             variant={subidas[f.key] ? "secondary" : "outline"}
-            disabled={loading || !revisionId}
+            disabled={loading || !revisionId || !equipoCodigo}
             onClick={() => handleCapture(f.key)}
           >
             {subidas[f.key] ? (
@@ -370,6 +505,9 @@ export default function OperarioMaquinariaInicio() {
               <Camera className="h-4 w-4 mr-2" />
             )}
             {f.label}
+            {!equipoCodigo ? (
+              <span className="ml-auto text-xs text-muted-foreground">(elige equipo)</span>
+            ) : null}
           </Button>
         ))}
       </div>

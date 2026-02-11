@@ -347,9 +347,14 @@ export default function OperarioHome() {
       <header className="sticky top-0 z-10 bg-card border-b px-4 py-3 shadow-sm">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-primary">
-              <Leaf className="h-5 w-5 text-primary-foreground" />
-            </div>
+            <div className="flex items-center justify-center mb-4">
+  <img
+    src="/logo_ipsa.JPG.jpeg"
+    alt="Logo IPSA"
+    className="h-20 w-auto object-contain"
+  />
+</div>
+
             <div>
               <h1 className="font-semibold text-foreground flex items-center gap-2">
                 <User className="h-4 w-4" />

@@ -16,10 +16,10 @@ type FotoTipo =
   | "cabina";
 
 const FOTO_TIPOS: { key: FotoTipo; label: string }[] = [
-  { key: "frente", label: "Foto frontal" },
-  { key: "lado_derecho", label: "Foto lado derecho" },
-  { key: "lado_izquierdo", label: "Foto lado izquierdo" },
-  { key: "trasera", label: "Foto trasera" },
+  { key: "frente", label: "Foto frontal maquina" },
+  { key: "lado_derecho", label: "Foto lado derecho maquina" },
+  { key: "lado_izquierdo", label: "Foto lado izquierdo maquina " },
+  { key: "trasera", label: "Foto trasera maquina" },
   { key: "cabina", label: "Foto interior de cabina" },
 ];
 
@@ -329,7 +329,7 @@ export default function OperarioMaquinariaFin() {
         <Button variant="ghost" size="icon" onClick={() => navigate(-1)} disabled={loading}>
           <ArrowLeft className="h-5 w-5" />
         </Button>
-        <h1 className="text-xl font-semibold">Revisión fin turno</h1>
+        <h1 className="text-xl font-semibold">Revisión final Maquinaria</h1>
       </div>
 
       <p className="text-sm text-muted-foreground">

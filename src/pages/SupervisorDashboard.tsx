@@ -612,7 +612,7 @@ export default function SupervisorDashboard() {
           <DialogHeader>
             <DialogTitle>{revModalTitle}</DialogTitle>
             <DialogDescription>
-              Se muestran URLs firmadas (expiran). Si aparece 403, revisa policies de Storage/DB para supervisor.
+             Se muestran fotos de la maquinaria
             </DialogDescription>
           </DialogHeader>
 

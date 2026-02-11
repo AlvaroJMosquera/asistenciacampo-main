@@ -110,10 +110,15 @@ export default function Auth() {
       <div className="w-full max-w-md">
         {/* Logo */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-primary mb-4">
-            <Leaf className="h-8 w-8 text-primary-foreground" />
-          </div>
-          <h1 className="text-2xl font-bold text-foreground">Control de Asistencia</h1>
+                <div className="flex items-center justify-center mb-4">
+        <img
+          src="/logo_ipsa.JPG.jpeg"
+          alt="Logo IPSA"
+          className="h-20 w-auto object-contain"
+        />
+      </div>
+
+          <h1 className="text-2xl font-bold text-foreground">Bitácora de Campo</h1>
           <p className="text-muted-foreground mt-1">Sistema agrícola de registro</p>
         </div>
 

@@ -778,9 +778,11 @@ export default function OperarioMaquinaria() {
       <header className="sticky top-0 z-10 bg-card border-b px-4 py-3 shadow-sm">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-primary">
-              <Leaf className="h-5 w-5 text-primary-foreground" />
-            </div>
+                    <img
+          src="/logo_ipsa.JPG.jpeg"
+          alt="Logo IPSA"
+          className="h-20 w-auto object-contain"
+        />
             <div>
               <h1 className="font-semibold text-foreground flex items-center gap-2">
                 <User className="h-4 w-4" />
@@ -836,8 +838,8 @@ export default function OperarioMaquinaria() {
           >
             <ClipboardCheck className="h-4 w-4 mr-2" />
             {rev.inicioComplete
-              ? `Revisión INICIO completa ✅ (${rev.required}/${rev.required})`
-              : `Revisión INICIO (fotos máquina) (${Math.min(rev.inicioCount, rev.required)}/${rev.required})`}
+              ? `Revision Maquinaria inicio turno completa ✅ (${rev.required}/${rev.required})`
+              : `Revision Maquinaria inicio turno (${Math.min(rev.inicioCount, rev.required)}/${rev.required})`}
           </Button>
 
           {/* 3) EVIDENCIA 1 */}
@@ -876,8 +878,8 @@ export default function OperarioMaquinaria() {
           >
             <ClipboardCheck className="h-4 w-4 mr-2" />
             {rev.finComplete
-              ? `Revisión FIN completa ✅ (${rev.required}/${rev.required})`
-              : `Revisión FIN (fotos máquina) (${Math.min(rev.finCount, rev.required)}/${rev.required})`}
+              ? `Revision Maquinaria fin turno completa ✅ (${rev.required}/${rev.required})`
+              : `Revision Maquinaria fin turno (${Math.min(rev.finCount, rev.required)}/${rev.required})`}
           </Button>
 
           {/* 6) SALIDA */}
