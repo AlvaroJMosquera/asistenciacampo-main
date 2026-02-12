@@ -355,12 +355,13 @@ export default function OperarioHome() {
   />
 </div>
 
-            <div>
-              <h1 className="font-semibold text-foreground flex items-center gap-2">
-                <User className="h-4 w-4" />
-                {profile?.nombre || 'Usuario'}
-              </h1>
-              <p className="text-sm text-muted-foreground capitalize">{today}</p>
+          <div className="flex flex-col">
+              <p className="text-base font-semibold text-foreground leading-tight">
+                {profile?.nombre || "Usuario"}
+              </p>
+              <p className="text-sm text-muted-foreground capitalize leading-tight">
+                {today}
+              </p>
             </div>
           </div>
 

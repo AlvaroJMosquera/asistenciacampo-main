@@ -160,29 +160,39 @@ export default function OperarioMaquinariaInicio() {
   );
 
   // 0) Cargar maestro maquinaria para dropdown
-  useEffect(() => {
-    const loadMaestro = async () => {
-      setEquiposLoading(true);
-      try {
-        const { data, error } = await supabase
-          .from("maestro_maquinaria")
-          .select("cod_equipo, descripcion_equipo, marca, modelo, potencia_hp, seguimiento")
-          .eq("activo", true) // ✅ si tu tabla tiene activo
-          .order("cod_equipo", { ascending: true });
-
-        if (error) {
-          console.error("[maestro_maquinaria select]", error.message);
-          setEquipos([]);
-          return;
-        }
-        setEquipos((data || []) as MaestroEquipo[]);
-      } finally {
-        setEquiposLoading(false);
+ useEffect(() => {
+  const loadMaestro = async () => {
+    setEquiposLoading(true);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (!sessionData.session) {
+        console.warn("Sin sesión aún; no consulto maestro_maquinaria");
+        setEquipos([]);
+        return;
       }
-    };
 
-    loadMaestro();
-  }, []);
+      const { data, error } = await supabase
+        .from("maestro_maquinaria")
+        .select("cod_equipo, descripcion_equipo, marca, modelo, potencia_hp, seguimiento")
+        .eq("activo", true) // ✅ BOOLEAN correcto
+        .order("cod_equipo", { ascending: true });
+
+      if (error) {
+        console.error("[maestro_maquinaria select]", error.message);
+        setEquipos([]);
+        return;
+      }
+
+      console.log("Equipos cargados:", data);
+      setEquipos(data || []);
+    } finally {
+      setEquiposLoading(false);
+    }
+  };
+
+  loadMaestro();
+}, []);
+
 
   /**
    * 1) Crear o recuperar revisión INICIO

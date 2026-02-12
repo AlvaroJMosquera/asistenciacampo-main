@@ -776,36 +776,41 @@ export default function OperarioMaquinaria() {
   return (
     <div className="min-h-screen flex flex-col bg-background">
       <header className="sticky top-0 z-10 bg-card border-b px-4 py-3 shadow-sm">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-                    <img
-          src="/logo_ipsa.JPG.jpeg"
-          alt="Logo IPSA"
-          className="h-20 w-auto object-contain"
-        />
-            <div>
-              <h1 className="font-semibold text-foreground flex items-center gap-2">
-                <User className="h-4 w-4" />
-                {profile?.nombre || 'Usuario'}
-              </h1>
-              <p className="text-sm text-muted-foreground capitalize">{today}</p>
-            </div>
-          </div>
+  <div className="max-w-lg mx-auto w-full flex items-center justify-between">
+    {/* Left: Logo + Name/Date */}
+    <div className="flex items-center gap-3 min-w-0">
+      <img
+        src="/logo_ipsa.JPG.jpeg"
+        alt="Logo IPSA"
+        className="h-12 w-auto object-contain shrink-0"
+      />
 
-          <div className="flex items-center gap-2">
-            {isSupervisor && (
-              <Link to="/supervisor">
-                <Button variant="outline" size="icon">
-                  <Settings className="h-4 w-4" />
-                </Button>
-              </Link>
-            )}
-            <Button variant="ghost" size="sm" onClick={signOut}>
-              Salir
-            </Button>
-          </div>
-        </div>
-      </header>
+      <div className="min-w-0 flex flex-col">
+        <p className="text-base font-semibold text-foreground leading-tight truncate">
+          {profile?.nombre || "Usuario"}
+        </p>
+        <p className="text-sm text-muted-foreground capitalize leading-tight truncate">
+          {today}
+        </p>
+      </div>
+    </div>
+
+    {/* Right: Actions */}
+    <div className="flex items-center gap-2 shrink-0">
+      {isSupervisor && (
+        <Link to="/supervisor">
+          <Button variant="outline" size="icon" aria-label="Panel supervisor">
+            <Settings className="h-4 w-4" />
+          </Button>
+        </Link>
+      )}
+      <Button variant="ghost" size="sm" onClick={signOut}>
+        Salir
+      </Button>
+    </div>
+  </div>
+</header>
+
 
       <main className="flex-1 p-4 space-y-4 max-w-lg mx-auto w-full">
         <div className="flex justify-center">
