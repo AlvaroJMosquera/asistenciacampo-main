@@ -1,19 +1,23 @@
 // src/pages/OperarioMaquinariaFin.tsx
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Camera, CheckCircle, ArrowLeft, MapPin } from "lucide-react";
+import { Camera, CheckCircle, ArrowLeft, ChevronsUpDown, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useCamera } from "@/hooks/useCamera";
 import { useGeolocation } from "@/hooks/useGeolocation";
+
+// ✅ Combobox buscable (shadcn)
+import { cn } from "@/lib/utils";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+} from "@/components/ui/command";
 
 type FotoTipo = "frente" | "lado_derecho" | "lado_izquierdo" | "trasera" | "cabina";
 
@@ -24,8 +28,6 @@ const FOTO_TIPOS: { key: FotoTipo; label: string }[] = [
   { key: "trasera", label: "Foto trasera maquina" },
   { key: "cabina", label: "Foto interior de cabina" },
 ];
-
-type GeoResult = { nom: string; hac_ste: string } | null;
 
 function toIsoDate(d = new Date()) {
   return d.toISOString().split("T")[0];
@@ -60,7 +62,7 @@ function writeGeoCache(userId: string, entradaId: string, tipo: "inicio" | "fin"
   } catch {}
 }
 
-async function resolveGeoRPC(lat: number, lon: number): Promise<GeoResult> {
+async function resolveGeoRPC(lat: number, lon: number): Promise<{ nom: string; hac_ste: string } | null> {
   const { data, error } = await supabase.rpc("get_hacienda_by_point", { lat, lon });
   if (error || !data || data.length === 0) return null;
   return { nom: data[0].nom, hac_ste: data[0].hac_ste };
@@ -79,7 +81,12 @@ function readLocalSubidas(userId: string, entradaId: string, tipo: "inicio" | "f
     return null;
   }
 }
-function writeLocalSubidas(userId: string, entradaId: string, tipo: "inicio" | "fin", subidas: Record<string, boolean>) {
+function writeLocalSubidas(
+  userId: string,
+  entradaId: string,
+  tipo: "inicio" | "fin",
+  subidas: Record<string, boolean>
+) {
   try {
     localStorage.setItem(fotosLocalKey(userId, entradaId, tipo), JSON.stringify(subidas));
   } catch {}
@@ -109,7 +116,7 @@ export default function OperarioMaquinariaFin() {
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
 
-  const [geoInfo, setGeoInfo] = useState<GeoInfo | null>(null);
+  // ✅ no mostrar ubicación al usuario, pero sí guardarla
   const [geoMsg, setGeoMsg] = useState<string | null>(null);
 
   // Maestro maquinaria
@@ -117,22 +124,21 @@ export default function OperarioMaquinariaFin() {
   const [equiposLoading, setEquiposLoading] = useState(false);
   const [equipoCodigo, setEquipoCodigo] = useState<string>("");
 
+  // ✅ combobox state
+  const [openEquipo, setOpenEquipo] = useState(false);
+
   const equipoSeleccionado = useMemo(
     () => equipos.find((e) => e.cod_equipo === equipoCodigo) ?? null,
     [equipos, equipoCodigo]
   );
 
-  const completas = useMemo(
-    () => FOTO_TIPOS.filter((f) => subidas[f.key]).length,
-    [subidas]
-  );
+  const completas = useMemo(() => FOTO_TIPOS.filter((f) => subidas[f.key]).length, [subidas]);
 
   // 0) Cargar maestro maquinaria
   useEffect(() => {
     const loadMaestro = async () => {
       setEquiposLoading(true);
       try {
-        // ⚠️ asegura que haya sesión (si no, en RLS puede salir vacío)
         const { data: sessionData } = await supabase.auth.getSession();
         if (!sessionData.session) {
           console.warn("Sin sesión aún; no consulto maestro_maquinaria");
@@ -152,7 +158,6 @@ export default function OperarioMaquinariaFin() {
           return;
         }
 
-        console.log("Equipos cargados:", data);
         setEquipos((data || []) as MaestroEquipo[]);
       } finally {
         setEquiposLoading(false);
@@ -162,7 +167,7 @@ export default function OperarioMaquinariaFin() {
     loadMaestro();
   }, []);
 
-  // 0.1) Cargar estado local de subidas (sin SELECT)
+  // 0.1) Cargar estado local de subidas
   useEffect(() => {
     if (!user?.id || !entradaId) return;
     const local = readLocalSubidas(user.id, entradaId, "fin");
@@ -183,8 +188,8 @@ export default function OperarioMaquinariaFin() {
 
   /**
    * 1) Crear o recuperar revisión FIN
-   * - Si existe: precarga equipo_codigo y geo desde cache si existe
-   * - Si crea: guarda timestamp + coords + (hac_ste/suerte_nom)
+   * - Si existe y le faltan datos de geo -> intenta completar y hace UPDATE
+   * - Si crea -> inserta geo completo
    */
   useEffect(() => {
     if (!user?.id || !entradaId) return;
@@ -192,10 +197,9 @@ export default function OperarioMaquinariaFin() {
     const loadOrCreateRevision = async () => {
       setCreating(true);
       try {
-        // 1) buscar existente (más reciente si hay duplicados)
         const { data: existing, error: selErr } = await supabase
           .from("revision_maquinaria")
-          .select("id, created_at, updated_at, equipo_codigo")
+          .select("id, equipo_codigo, latitud, longitud, hac_ste, suerte_nom, precision_gps, fuera_zona")
           .eq("user_id", user.id)
           .eq("tipo", "fin")
           .eq("entrada_id", entradaId)
@@ -208,69 +212,96 @@ export default function OperarioMaquinariaFin() {
           return;
         }
 
-        if (existing?.[0]?.id) {
-          setRevisionId(existing[0].id);
+        const getGeoPayload = async (): Promise<GeoInfo> => {
+          const cached = readGeoCache(user.id, entradaId, "fin");
+          if (cached) return cached;
 
-          if (existing[0].equipo_codigo && existing[0].equipo_codigo !== "SIN_DEFINIR") {
-            setEquipoCodigo(existing[0].equipo_codigo);
+          let geoPayload: GeoInfo = {
+            lat: null,
+            lon: null,
+            accuracy: null,
+            hac_ste: null,
+            suerte_nom: null,
+            fuera_zona: false,
+            at: new Date().toISOString(),
+          };
+
+          try {
+            const pos = await getCurrentPosition();
+            const hasCoords = pos?.latitude != null && pos?.longitude != null;
+
+            if (!hasCoords) {
+              setGeoMsg("No se pudo obtener GPS (sin coordenadas).");
+              writeGeoCache(user.id, entradaId, "fin", geoPayload);
+              return geoPayload;
+            }
+
+            const resolved = navigator.onLine ? await resolveGeoRPC(pos.latitude, pos.longitude) : null;
+
+            geoPayload = {
+              lat: pos.latitude,
+              lon: pos.longitude,
+              accuracy: pos.accuracy ?? null,
+              hac_ste: resolved?.hac_ste ?? null,
+              suerte_nom: resolved?.nom ?? null,
+              fuera_zona: resolved ? false : true,
+              at: new Date().toISOString(),
+            };
+
+            if (!resolved) setGeoMsg("GPS OK, pero no se resolvió suerte/hacienda (fuera de zona o sin internet).");
+            else setGeoMsg(null);
+
+            writeGeoCache(user.id, entradaId, "fin", geoPayload);
+            return geoPayload;
+          } catch {
+            setGeoMsg("No se pudo obtener GPS. Revisa permisos de ubicación.");
+            writeGeoCache(user.id, entradaId, "fin", geoPayload);
+            return geoPayload;
+          }
+        };
+
+        // SI EXISTE
+        if (existing?.[0]?.id) {
+          const row = existing[0];
+          setRevisionId(row.id);
+
+          if (row.equipo_codigo && row.equipo_codigo !== "SIN_DEFINIR") {
+            setEquipoCodigo(row.equipo_codigo);
           }
 
-          const cached = readGeoCache(user.id, entradaId, "fin");
-          if (cached) {
-            setGeoInfo(cached);
-            if (!cached.hac_ste && !cached.suerte_nom) setGeoMsg("Sin información de ubicación");
+          const faltaGeo =
+            row.latitud == null ||
+            row.longitud == null ||
+            row.hac_ste == null ||
+            row.suerte_nom == null;
+
+          if (faltaGeo) {
+            const geoPayload = await getGeoPayload();
+
+            if (geoPayload.lat != null && geoPayload.lon != null) {
+              const { error: updErr } = await supabase
+                .from("revision_maquinaria")
+                .update({
+                  timestamp: new Date().toISOString(), // opcional
+                  latitud: geoPayload.lat,
+                  longitud: geoPayload.lon,
+                  precision_gps: geoPayload.accuracy,
+                  fuera_zona: geoPayload.fuera_zona,
+                  hac_ste: geoPayload.hac_ste,
+                  suerte_nom: geoPayload.suerte_nom,
+                })
+                .eq("id", row.id);
+
+              if (updErr) console.error("[revision_maquinaria update geo]", updErr.message);
+            }
           }
 
           return;
         }
 
-        // 2) geo best-effort + cache
-        let geoPayload: GeoInfo = {
-          lat: null,
-          lon: null,
-          accuracy: null,
-          hac_ste: null,
-          suerte_nom: null,
-          fuera_zona: false,
-          at: new Date().toISOString(),
-        };
+        // NO EXISTE -> crear con geo
+        const geoPayload = await getGeoPayload();
 
-        const cached = readGeoCache(user.id, entradaId, "fin");
-        if (cached) {
-          geoPayload = cached;
-        } else {
-          try {
-            const pos = await getCurrentPosition();
-            const hasCoords = pos?.latitude != null && pos?.longitude != null;
-
-            if (hasCoords) {
-              const resolved = navigator.onLine ? await resolveGeoRPC(pos.latitude, pos.longitude) : null;
-
-              geoPayload = {
-                lat: pos.latitude,
-                lon: pos.longitude,
-                accuracy: pos.accuracy ?? null,
-                hac_ste: resolved?.hac_ste ?? null,
-                suerte_nom: resolved?.nom ?? null,
-                fuera_zona: resolved ? false : true,
-                at: new Date().toISOString(),
-              };
-
-              if (!resolved) setGeoMsg("GPS OK, pero fuera de una suerte/hacienda (o sin internet para resolver).");
-              else setGeoMsg(null);
-            } else {
-              setGeoMsg("No se pudo obtener GPS (sin coordenadas).");
-            }
-          } catch {
-            setGeoMsg("No se pudo obtener GPS. Revisa permisos de ubicación.");
-          }
-
-          writeGeoCache(user.id, entradaId, "fin", geoPayload);
-        }
-
-        setGeoInfo(geoPayload);
-
-        // 3) crear revisión FIN
         const { data: created, error: insErr } = await supabase
           .from("revision_maquinaria")
           .insert({
@@ -303,20 +334,13 @@ export default function OperarioMaquinariaFin() {
     loadOrCreateRevision();
   }, [user?.id, entradaId, getCurrentPosition]);
 
-  // ✅ Seleccionar equipo => actualizar revision_maquinaria.equipo_codigo
+  // ✅ Seleccionar equipo => update equipo_codigo
   const onSelectEquipo = async (cod: string) => {
     setEquipoCodigo(cod);
-
     if (!revisionId) return;
 
-    const { error } = await supabase
-      .from("revision_maquinaria")
-      .update({ equipo_codigo: cod })
-      .eq("id", revisionId);
-
-    if (error) {
-      console.error("[revision_maquinaria update equipo_codigo]", error.message);
-    }
+    const { error } = await supabase.from("revision_maquinaria").update({ equipo_codigo: cod }).eq("id", revisionId);
+    if (error) console.error("[revision_maquinaria update equipo_codigo]", error.message);
   };
 
   /**
@@ -348,33 +372,25 @@ export default function OperarioMaquinariaFin() {
       const today = toIsoDate();
       const filePath = `${user.id}/maquinaria/${today}/fin/${revisionId}/${tipo}.webp`;
 
-      // upload storage
-      const { error: uploadErr } = await supabase.storage
-        .from("attendance-photos")
-        .upload(filePath, blob, {
-          upsert: true,
-          contentType: "image/webp",
-        });
-
+      const { error: uploadErr } = await supabase.storage.from("attendance-photos").upload(filePath, blob, {
+        upsert: true,
+        contentType: "image/webp",
+      });
       if (uploadErr) {
         console.error("[storage upload]", uploadErr.message);
         return;
       }
 
-      // metadata DB
-      const { error: upsertErr } = await supabase
-        .from("revision_maquinaria_fotos")
-        .upsert(
-          {
-            revision_id: revisionId,
-            user_id: user.id,
-            foto_tipo: tipo,
-            foto_path: filePath,
-            foto_url: null,
-          },
-          { onConflict: "revision_id,foto_tipo" } as any
-        );
-
+      const { error: upsertErr } = await supabase.from("revision_maquinaria_fotos").upsert(
+        {
+          revision_id: revisionId,
+          user_id: user.id,
+          foto_tipo: tipo,
+          foto_path: filePath,
+          foto_url: null,
+        },
+        { onConflict: "revision_id,foto_tipo" } as any
+      );
       if (upsertErr) {
         console.error("[revision_maquinaria_fotos upsert]", upsertErr.message);
         return;
@@ -389,11 +405,10 @@ export default function OperarioMaquinariaFin() {
   };
 
   /**
-   * 3) Finalizar revisión (local flag)
+   * 3) Finalizar revisión
    */
   const finalizar = () => {
     if (completas !== FOTO_TIPOS.length) return;
-
     const today = toIsoDate();
     localStorage.setItem(`maq_revision_complete:${user?.id}:${today}:fin`, "1");
     navigate("/OperarioMaquinaria");
@@ -412,22 +427,68 @@ export default function OperarioMaquinariaFin() {
         Captura las <strong>5 fotos obligatorias</strong> al entregar la maquinaria.
       </p>
 
-      {/* ✅ Equipo (dropdown) */}
+      {/* ✅ Equipo (combobox buscable) */}
       <div className="rounded-lg border p-3 space-y-2">
         <div className="text-sm font-medium">Equipo</div>
 
-        <Select value={equipoCodigo} onValueChange={onSelectEquipo} disabled={equiposLoading || !revisionId}>
-          <SelectTrigger>
-            <SelectValue placeholder={equiposLoading ? "Cargando equipos..." : "Selecciona el código de equipo"} />
-          </SelectTrigger>
-          <SelectContent>
-            {equipos.map((e) => (
-              <SelectItem key={e.cod_equipo} value={e.cod_equipo}>
-                {e.cod_equipo}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <Popover open={openEquipo} onOpenChange={setOpenEquipo}>
+          <PopoverTrigger asChild>
+            <Button
+              variant="outline"
+              role="combobox"
+              aria-expanded={openEquipo}
+              className="w-full justify-between"
+              disabled={equiposLoading || !revisionId}
+            >
+              {equipoCodigo
+                ? (() => {
+                    const e = equipos.find((x) => x.cod_equipo === equipoCodigo);
+                    return e ? `${e.cod_equipo} — ${e.descripcion_equipo ?? "—"}` : equipoCodigo;
+                  })()
+                : equiposLoading
+                  ? "Cargando equipos..."
+                  : "Selecciona el equipo..."}
+              <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+            </Button>
+          </PopoverTrigger>
+
+          <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0">
+            <Command
+              filter={(value, search) => {
+                const v = value.toLowerCase();
+                const s = search.toLowerCase();
+                return v.includes(s) ? 1 : 0;
+              }}
+            >
+              <CommandInput placeholder="Buscar por código o descripción..." />
+              <CommandEmpty>No se encontraron equipos.</CommandEmpty>
+
+              <CommandGroup className="max-h-64 overflow-auto">
+                {equipos.map((e) => {
+                  const itemValue = `${e.cod_equipo} ${e.descripcion_equipo ?? ""}`;
+                  return (
+                    <CommandItem
+                      key={e.cod_equipo}
+                      value={itemValue}
+                      onSelect={async () => {
+                        await onSelectEquipo(e.cod_equipo);
+                        setOpenEquipo(false);
+                      }}
+                    >
+                      <Check
+                        className={cn("mr-2 h-4 w-4", equipoCodigo === e.cod_equipo ? "opacity-100" : "opacity-0")}
+                      />
+                      <div className="flex flex-col">
+                        <span className="text-sm font-medium">{e.cod_equipo}</span>
+                        <span className="text-xs text-muted-foreground">{e.descripcion_equipo ?? "—"}</span>
+                      </div>
+                    </CommandItem>
+                  );
+                })}
+              </CommandGroup>
+            </Command>
+          </PopoverContent>
+        </Popover>
 
         <div className="text-xs text-muted-foreground">
           {equipoSeleccionado ? (
@@ -448,31 +509,11 @@ export default function OperarioMaquinariaFin() {
         </div>
       </div>
 
-      {/* Ubicación registrada */}
-      <div className="rounded-lg border p-3 text-sm">
-        <div className="flex items-center gap-2 font-medium">
-          <MapPin className="h-4 w-4" />
-          Ubicación de la revisión
-        </div>
-
-        {creating ? (
-          <p className="text-muted-foreground mt-1">Guardando ubicación…</p>
-        ) : geoInfo?.hac_ste || geoInfo?.suerte_nom ? (
-          <div className="mt-2 space-y-1">
-            <div>
-              <span className="text-muted-foreground">Suerte:</span> {geoInfo?.suerte_nom ?? "—"}
-            </div>
-            <div>
-              <span className="text-muted-foreground">Hacienda/Suerte:</span> {geoInfo?.hac_ste ?? "—"}
-            </div>
-            {geoInfo?.accuracy != null && (
-              <div className="text-xs text-muted-foreground">Precisión GPS: ±{Math.round(geoInfo.accuracy)} m</div>
-            )}
-          </div>
-        ) : (
-          <p className="text-muted-foreground mt-1">{geoMsg ?? "Sin información de ubicación"}</p>
-        )}
-      </div>
+      {/* ✅ NO mostramos la ubicación al usuario (pero sí se guarda). 
+          Si quieres debug temporal, descomenta:
+          {geoMsg ? <p className="text-xs text-muted-foreground">{geoMsg}</p> : null}
+      */}
+      {false && geoMsg ? <p className="text-xs text-muted-foreground">{geoMsg}</p> : null}
 
       <div className="space-y-3">
         {FOTO_TIPOS.map((f) => (
