@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Camera, CheckCircle, ArrowLeft, MapPin } from "lucide-react";
+import { Camera, CheckCircle, ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
@@ -14,12 +14,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-type FotoTipo =
-  | "frente"
-  | "lado_derecho"
-  | "lado_izquierdo"
-  | "trasera"
-  | "cabina";
+type FotoTipo = "frente" | "lado_derecho" | "lado_izquierdo" | "trasera" | "cabina";
 
 const FOTO_TIPOS: { key: FotoTipo; label: string }[] = [
   { key: "frente", label: "Foto frontal maquina" },
@@ -49,11 +44,7 @@ type GeoInfo = {
 function geoCacheKey(userId: string, entradaId: string, tipo: "inicio" | "fin") {
   return `maq_geo_cache:${userId}:${entradaId}:${tipo}`;
 }
-function readGeoCache(
-  userId: string,
-  entradaId: string,
-  tipo: "inicio" | "fin"
-): GeoInfo | null {
+function readGeoCache(userId: string, entradaId: string, tipo: "inicio" | "fin"): GeoInfo | null {
   try {
     const raw = localStorage.getItem(geoCacheKey(userId, entradaId, tipo));
     if (!raw) return null;
@@ -62,12 +53,7 @@ function readGeoCache(
     return null;
   }
 }
-function writeGeoCache(
-  userId: string,
-  entradaId: string,
-  tipo: "inicio" | "fin",
-  geo: GeoInfo
-) {
+function writeGeoCache(userId: string, entradaId: string, tipo: "inicio" | "fin", geo: GeoInfo) {
   try {
     localStorage.setItem(geoCacheKey(userId, entradaId, tipo), JSON.stringify(geo));
   } catch {}
@@ -79,7 +65,40 @@ async function resolveGeoRPC(lat: number, lon: number): Promise<GeoResult> {
   return { nom: data[0].nom, hac_ste: data[0].hac_ste };
 }
 
-// ---------- Local state for photo completion (no SELECT needed) ----------
+/**
+ * ✅ Extrae coordenadas sin importar el shape del objeto que devuelva tu hook.
+ * Soporta:
+ * - { latitude, longitude, accuracy }
+ * - { lat, lon, accuracy }
+ * - { coords: { latitude, longitude, accuracy } }
+ */
+function pickCoords(pos: any): { lat: number | null; lon: number | null; accuracy: number | null } {
+  const lat =
+    pos?.lat ??
+    pos?.latitude ??
+    pos?.coords?.latitude ??
+    null;
+
+  const lon =
+    pos?.lon ??
+    pos?.lng ?? // por si viene como lng
+    pos?.longitude ??
+    pos?.coords?.longitude ??
+    null;
+
+  const accuracy =
+    pos?.accuracy ??
+    pos?.coords?.accuracy ??
+    null;
+
+  return {
+    lat: typeof lat === "number" ? lat : null,
+    lon: typeof lon === "number" ? lon : null,
+    accuracy: typeof accuracy === "number" ? accuracy : null,
+  };
+}
+
+// ---------- Local state for photo completion ----------
 function fotosLocalKey(userId: string, entradaId: string, tipo: "inicio" | "fin") {
   return `maq_fotos_local:${userId}:${entradaId}:${tipo}`;
 }
@@ -92,12 +111,7 @@ function readLocalSubidas(userId: string, entradaId: string, tipo: "inicio" | "f
     return null;
   }
 }
-function writeLocalSubidas(
-  userId: string,
-  entradaId: string,
-  tipo: "inicio" | "fin",
-  subidas: Record<string, boolean>
-) {
+function writeLocalSubidas(userId: string, entradaId: string, tipo: "inicio" | "fin", subidas: Record<string, boolean>) {
   try {
     localStorage.setItem(fotosLocalKey(userId, entradaId, tipo), JSON.stringify(subidas));
   } catch {}
@@ -109,7 +123,6 @@ type MaestroEquipo = {
   descripcion_equipo: string | null;
   marca?: string | null;
   modelo?: string | null;
-  potencia?: string | null;
   potencia_hp?: number | null;
   seguimiento?: string | null;
 };
@@ -124,26 +137,21 @@ export default function OperarioMaquinariaInicio() {
   const { getCurrentPosition } = useGeolocation();
 
   const [revisionId, setRevisionId] = useState<string | null>(null);
-  const [subidas, setSubidas] = useState<Record<FotoTipo, boolean>>(
-    {} as Record<FotoTipo, boolean>
-  );
+  const [subidas, setSubidas] = useState<Record<FotoTipo, boolean>>({} as Record<FotoTipo, boolean>);
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
-
-  const [geoInfo, setGeoInfo] = useState<GeoResult>(null);
-  const [geoMsg, setGeoMsg] = useState<string | null>(null);
 
   // Maestro maquinaria
   const [equipos, setEquipos] = useState<MaestroEquipo[]>([]);
   const [equiposLoading, setEquiposLoading] = useState(false);
-  const [equipoCodigo, setEquipoCodigo] = useState<string>(""); // seleccionado
+  const [equipoCodigo, setEquipoCodigo] = useState<string>("");
 
   const equipoSeleccionado = useMemo(
     () => equipos.find((e) => e.cod_equipo === equipoCodigo) ?? null,
     [equipos, equipoCodigo]
   );
 
-  // carga estado local de subidas (sin SELECT)
+  // carga estado local de subidas
   useEffect(() => {
     if (!user?.id || !entradaId) return;
     const local = readLocalSubidas(user.id, entradaId, "inicio");
@@ -154,51 +162,95 @@ export default function OperarioMaquinariaInicio() {
     setSubidas((prev) => ({ ...prev, ...next }));
   }, [user?.id, entradaId]);
 
-  const completas = useMemo(
-    () => FOTO_TIPOS.filter((f) => subidas[f.key]).length,
-    [subidas]
-  );
+  const completas = useMemo(() => FOTO_TIPOS.filter((f) => subidas[f.key]).length, [subidas]);
 
-  // 0) Cargar maestro maquinaria para dropdown
- useEffect(() => {
-  const loadMaestro = async () => {
-    setEquiposLoading(true);
+  // 0) Cargar maestro maquinaria (dropdown)
+  useEffect(() => {
+    const loadMaestro = async () => {
+      setEquiposLoading(true);
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        if (!sessionData.session) {
+          console.warn("Sin sesión aún; no consulto maestro_maquinaria");
+          setEquipos([]);
+          return;
+        }
+
+        const { data, error } = await supabase
+          .from("maestro_maquinaria")
+          .select("cod_equipo, descripcion_equipo, marca, modelo, potencia_hp, seguimiento")
+          .eq("activo", true)
+          .order("cod_equipo", { ascending: true });
+
+        if (error) {
+          console.error("[maestro_maquinaria select]", error.message);
+          setEquipos([]);
+          return;
+        }
+
+        setEquipos((data || []) as MaestroEquipo[]);
+      } finally {
+        setEquiposLoading(false);
+      }
+    };
+
+    loadMaestro();
+  }, []);
+
+  // ✅ Captura geo (silencioso) + cache
+  const captureAndResolveGeo = async (): Promise<GeoInfo> => {
+    // default
+    let geoPayload: GeoInfo = {
+      lat: null,
+      lon: null,
+      accuracy: null,
+      hac_ste: null,
+      suerte_nom: null,
+      fuera_zona: false,
+      at: new Date().toISOString(),
+    };
+
+    if (!user?.id || !entradaId) return geoPayload;
+
+    // si hay cache y tiene coords, úsalo (evita repetir GPS)
+    const cached = readGeoCache(user.id, entradaId, "inicio");
+    if (cached?.lat != null && cached?.lon != null) return cached;
+
     try {
-      const { data: sessionData } = await supabase.auth.getSession();
-      if (!sessionData.session) {
-        console.warn("Sin sesión aún; no consulto maestro_maquinaria");
-        setEquipos([]);
-        return;
+      const pos = await getCurrentPosition();
+      const coords = pickCoords(pos);
+
+      // si no hay coords, cachea null
+      if (coords.lat == null || coords.lon == null) {
+        writeGeoCache(user.id, entradaId, "inicio", geoPayload);
+        return geoPayload;
       }
 
-      const { data, error } = await supabase
-        .from("maestro_maquinaria")
-        .select("cod_equipo, descripcion_equipo, marca, modelo, potencia_hp, seguimiento")
-        .eq("activo", true) // ✅ BOOLEAN correcto
-        .order("cod_equipo", { ascending: true });
+      // resolver nombre SOLO si online
+      const resolved = navigator.onLine ? await resolveGeoRPC(coords.lat, coords.lon) : null;
 
-      if (error) {
-        console.error("[maestro_maquinaria select]", error.message);
-        setEquipos([]);
-        return;
-      }
+      geoPayload = {
+        lat: coords.lat,
+        lon: coords.lon,
+        accuracy: coords.accuracy,
+        hac_ste: resolved?.hac_ste ?? null,
+        suerte_nom: resolved?.nom ?? null,
+        fuera_zona: resolved ? false : true,
+        at: new Date().toISOString(),
+      };
 
-      console.log("Equipos cargados:", data);
-      setEquipos(data || []);
-    } finally {
-      setEquiposLoading(false);
+      writeGeoCache(user.id, entradaId, "inicio", geoPayload);
+      return geoPayload;
+    } catch {
+      // cachea nulls
+      writeGeoCache(user.id, entradaId, "inicio", geoPayload);
+      return geoPayload;
     }
   };
 
-  loadMaestro();
-}, []);
-
-
   /**
    * 1) Crear o recuperar revisión INICIO
-   * - Busca la más reciente
-   * - Al crear: guarda timestamp + coords + (hac_ste/suerte_nom)
-   * - Si ya existe: precarga equipo_codigo en el dropdown
+   * - Si existe y no tiene geo, lo actualiza
    */
   useEffect(() => {
     if (!user?.id || !entradaId) return;
@@ -206,10 +258,9 @@ export default function OperarioMaquinariaInicio() {
     const loadOrCreateRevision = async () => {
       setCreating(true);
       try {
-        // 1) buscar existente (más reciente si hay duplicados)
         const { data: existing, error: selErr } = await supabase
           .from("revision_maquinaria")
-          .select("id, created_at, updated_at, equipo_codigo")
+          .select("id, equipo_codigo, latitud, longitud, hac_ste, suerte_nom")
           .eq("user_id", user.id)
           .eq("tipo", "inicio")
           .eq("entrada_id", entradaId)
@@ -222,79 +273,49 @@ export default function OperarioMaquinariaInicio() {
           return;
         }
 
+        // ✅ si ya existe
         if (existing?.[0]?.id) {
-          setRevisionId(existing[0].id);
+          const row = existing[0];
+          setRevisionId(row.id);
 
-          // ✅ precargar equipo si ya estaba guardado
-          if (existing[0].equipo_codigo && existing[0].equipo_codigo !== "SIN_DEFINIR") {
-            setEquipoCodigo(existing[0].equipo_codigo);
+          if (row.equipo_codigo && row.equipo_codigo !== "SIN_DEFINIR") {
+            setEquipoCodigo(row.equipo_codigo);
           }
 
-          // mostrar geo cache si existe
-          const cached = readGeoCache(user.id, entradaId, "inicio");
-          if (cached) {
-            setGeoInfo(
-              cached.hac_ste || cached.suerte_nom
-                ? { nom: cached.suerte_nom ?? "—", hac_ste: cached.hac_ste ?? "—" }
-                : null
-            );
-            if (!cached.hac_ste && !cached.suerte_nom) setGeoMsg("Sin información de ubicación");
+          // ✅ si NO tiene coords/nombre, intenta capturar y actualizar
+          const missingGeo =
+            row.latitud == null ||
+            row.longitud == null ||
+            row.hac_ste == null ||
+            row.suerte_nom == null;
+
+          if (missingGeo) {
+            const geo = await captureAndResolveGeo();
+            // solo update si por lo menos hay coords
+            if (geo.lat != null && geo.lon != null) {
+              const { error: upErr } = await supabase
+                .from("revision_maquinaria")
+                .update({
+                  latitud: geo.lat,
+                  longitud: geo.lon,
+                  precision_gps: geo.accuracy,
+                  fuera_zona: geo.fuera_zona,
+                  hac_ste: geo.hac_ste,
+                  suerte_nom: geo.suerte_nom,
+                  timestamp: new Date().toISOString(),
+                })
+                .eq("id", row.id);
+
+              if (upErr) console.error("[revision_maquinaria update geo]", upErr.message);
+            }
           }
 
           return;
         }
 
-        // 2) geo best-effort + cache
-        let geoPayload: GeoInfo = {
-          lat: null,
-          lon: null,
-          accuracy: null,
-          hac_ste: null,
-          suerte_nom: null,
-          fuera_zona: false,
-          at: new Date().toISOString(),
-        };
+        // ✅ crear nueva: captura geo (silencioso)
+        const geo = await captureAndResolveGeo();
 
-        const cached = readGeoCache(user.id, entradaId, "inicio");
-        if (cached) {
-          geoPayload = cached;
-        } else {
-          try {
-            const pos = await getCurrentPosition();
-            const hasCoords = pos?.latitude != null && pos?.longitude != null;
-
-            if (hasCoords) {
-              const resolved = navigator.onLine
-                ? await resolveGeoRPC(pos.latitude, pos.longitude)
-                : null;
-
-              geoPayload = {
-                lat: pos.latitude,
-                lon: pos.longitude,
-                accuracy: pos.accuracy ?? null,
-                hac_ste: resolved?.hac_ste ?? null,
-                suerte_nom: resolved?.nom ?? null,
-                fuera_zona: resolved ? false : true,
-                at: new Date().toISOString(),
-              };
-
-              if (!resolved) setGeoMsg("GPS OK, pero fuera de una suerte/hacienda (o sin internet para resolver).");
-              else setGeoMsg(null);
-
-              setGeoInfo(resolved);
-            } else {
-              setGeoMsg("No se pudo obtener GPS (sin coordenadas).");
-              setGeoInfo(null);
-            }
-          } catch {
-            setGeoMsg("No se pudo obtener GPS. Revisa permisos de ubicación.");
-            setGeoInfo(null);
-          }
-
-          writeGeoCache(user.id, entradaId, "inicio", geoPayload);
-        }
-
-        // 3) crear revisión INICIO (equipo_codigo queda SIN_DEFINIR hasta que el usuario elija)
         const { data: created, error: insErr } = await supabase
           .from("revision_maquinaria")
           .insert({
@@ -303,12 +324,13 @@ export default function OperarioMaquinariaInicio() {
             tipo: "inicio",
             equipo_codigo: "SIN_DEFINIR",
             timestamp: new Date().toISOString(),
-            latitud: geoPayload.lat,
-            longitud: geoPayload.lon,
-            precision_gps: geoPayload.accuracy,
-            fuera_zona: geoPayload.fuera_zona,
-            hac_ste: geoPayload.hac_ste,
-            suerte_nom: geoPayload.suerte_nom,
+
+            latitud: geo.lat,
+            longitud: geo.lon,
+            precision_gps: geo.accuracy,
+            fuera_zona: geo.fuera_zona,
+            hac_ste: geo.hac_ste,
+            suerte_nom: geo.suerte_nom,
           } as any)
           .select("id")
           .single();
@@ -325,12 +347,12 @@ export default function OperarioMaquinariaInicio() {
     };
 
     loadOrCreateRevision();
-  }, [user?.id, entradaId, getCurrentPosition]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, entradaId]);
 
-  // ✅ Cuando el usuario selecciona un equipo: actualizar revision_maquinaria.equipo_codigo
+  // actualizar equipo_codigo
   const onSelectEquipo = async (cod: string) => {
     setEquipoCodigo(cod);
-
     if (!revisionId) return;
 
     const { error } = await supabase
@@ -338,21 +360,16 @@ export default function OperarioMaquinariaInicio() {
       .update({ equipo_codigo: cod })
       .eq("id", revisionId);
 
-    if (error) {
-      console.error("[revision_maquinaria update equipo_codigo]", error.message);
-    }
+    if (error) console.error("[revision_maquinaria update equipo_codigo]", error.message);
   };
 
-  /**
-   * 2) Capturar y subir foto (path incluye revisionId)
-   */
+  // Capturar y subir foto
   const handleCapture = async (tipo: FotoTipo) => {
     if (!revisionId || !user?.id || !entradaId) return;
 
     try {
       setLoading(true);
 
-      // 🔒 obliga seleccionar equipo antes de fotos
       if (!equipoCodigo) {
         console.error("Debe seleccionar equipo antes de subir fotos");
         return;
@@ -373,20 +390,15 @@ export default function OperarioMaquinariaInicio() {
       const today = toIsoDate();
       const filePath = `${user.id}/maquinaria/${today}/inicio/${revisionId}/${tipo}.webp`;
 
-      // 1) upload a storage
       const { error: uploadErr } = await supabase.storage
         .from("attendance-photos")
-        .upload(filePath, blob, {
-          upsert: true,
-          contentType: "image/webp",
-        });
+        .upload(filePath, blob, { upsert: true, contentType: "image/webp" });
 
       if (uploadErr) {
         console.error("[storage upload]", uploadErr.message);
         return;
       }
 
-      // 2) metadata DB (sin URL)
       const { error: upsertErr } = await supabase
         .from("revision_maquinaria_fotos")
         .upsert(
@@ -413,9 +425,6 @@ export default function OperarioMaquinariaInicio() {
     }
   };
 
-  /**
-   * 3) Finalizar revisión (local flag)
-   */
   const finalizar = () => {
     if (completas !== FOTO_TIPOS.length) return;
     const today = toIsoDate();
@@ -436,19 +445,13 @@ export default function OperarioMaquinariaInicio() {
         Debes capturar las <strong>5 fotos obligatorias</strong> de la maquinaria antes de continuar.
       </p>
 
-      {/* ✅ Equipo (dropdown) */}
+      {/* Equipo (dropdown) */}
       <div className="rounded-lg border p-3 space-y-2">
         <div className="text-sm font-medium">Equipo</div>
 
-        <Select
-          value={equipoCodigo}
-          onValueChange={onSelectEquipo}
-          disabled={equiposLoading || !revisionId}
-        >
+        <Select value={equipoCodigo} onValueChange={onSelectEquipo} disabled={equiposLoading || !revisionId}>
           <SelectTrigger>
-            <SelectValue
-              placeholder={equiposLoading ? "Cargando equipos..." : "Selecciona el código de equipo"}
-            />
+            <SelectValue placeholder={equiposLoading ? "Cargando equipos..." : "Selecciona el código de equipo"} />
           </SelectTrigger>
           <SelectContent>
             {equipos.map((e) => (
@@ -476,29 +479,11 @@ export default function OperarioMaquinariaInicio() {
             "Selecciona un equipo para ver la descripción."
           )}
         </div>
+
+        {creating ? <p className="text-xs text-muted-foreground">Preparando revisión…</p> : null}
       </div>
 
-      {/* Ubicación registrada al iniciar revisión */}
-      <div className="rounded-lg border p-3 text-sm">
-        <div className="flex items-center gap-2 font-medium">
-          <MapPin className="h-4 w-4" />
-          Ubicación de la revisión
-        </div>
-        {creating ? (
-          <p className="text-muted-foreground mt-1">Guardando ubicación…</p>
-        ) : geoInfo ? (
-          <div className="mt-2 space-y-1">
-            <div>
-              <span className="text-muted-foreground">Suerte:</span> {geoInfo.nom}
-            </div>
-            <div>
-              <span className="text-muted-foreground">Hacienda/Suerte:</span> {geoInfo.hac_ste}
-            </div>
-          </div>
-        ) : (
-          <p className="text-muted-foreground mt-1">{geoMsg ?? "Sin información de ubicación"}</p>
-        )}
-      </div>
+      {/* ✅ UBICACIÓN QUITADA DEL FRONT (NO SE MUESTRA) */}
 
       <div className="space-y-3">
         {FOTO_TIPOS.map((f) => (
@@ -515,9 +500,7 @@ export default function OperarioMaquinariaInicio() {
               <Camera className="h-4 w-4 mr-2" />
             )}
             {f.label}
-            {!equipoCodigo ? (
-              <span className="ml-auto text-xs text-muted-foreground">(elige equipo)</span>
-            ) : null}
+            {!equipoCodigo ? <span className="ml-auto text-xs text-muted-foreground">(elige equipo)</span> : null}
           </Button>
         ))}
       </div>
