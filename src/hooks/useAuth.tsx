@@ -2,7 +2,13 @@ import { createContext, useContext, useEffect, useState, ReactNode } from 'react
 import { User, Session } from '@supabase/supabase-js';
 import { supabase } from '@/integrations/supabase/client';
 
-type AppRole = 'operario' | 'operario_maquinaria' | 'supervisor';
+type AppRole =
+  | 'operario'
+  | 'operario_maquinaria'
+  | 'operario_cuadrilla'
+  | 'supervisor'
+  | 'supervisor_cuadrilla';
+
 
 interface Profile {
   id: string;
@@ -18,6 +24,9 @@ interface AuthContextType {
   isLoading: boolean;
   isSupervisor: boolean;
   isOperarioMaquinaria: boolean;
+  isOperarioCuadrilla: boolean;
+  isSupervisorCuadrilla: boolean;
+
 
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
   signUp: (email: string, password: string, nombre: string) => Promise<{ error: Error | null }>;
@@ -159,6 +168,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     isLoading,
     isSupervisor: role === 'supervisor',
     isOperarioMaquinaria: role === 'operario_maquinaria',
+    isOperarioCuadrilla: role === 'operario_cuadrilla',
+    isSupervisorCuadrilla: role === 'supervisor_cuadrilla',
+
     signIn,
     signUp,
     signOut,

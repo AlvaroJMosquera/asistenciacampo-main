@@ -14,6 +14,9 @@ import SupervisorTracking from "./pages/SupervisorTracking";
 import NotFound from "./pages/NotFound";
 import OperarioMaquinariaInicio from "./pages/OperarioMaquinariaInicio";
 import OperarioMaquinariaFin from "./pages/OperarioMaquinariaFin";
+import OperarioCuadrilla from "./pages/OperarioCuadrilla";
+import SupervisorCuadrilla from "./pages/SupervisorCuadrilla";
+
 
 
 const queryClient = new QueryClient();
@@ -66,6 +69,26 @@ function AppContent() {
             </ProtectedRoute>
           }
         />
+        <Route
+          path="/OperarioCuadrilla"
+          element={
+            <ProtectedRoute>
+              <OperarioCuadrilla />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/supervisor/cuadrilla"
+          element={
+            <ProtectedRoute>
+              <SupervisorRoute>
+                <SupervisorCuadrilla />
+              </SupervisorRoute>
+            </ProtectedRoute>
+          }
+        />
+
 
         <Route
           path="/supervisor"
