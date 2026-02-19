@@ -36,7 +36,14 @@ export interface PendingTrackPoint {
 }
 
 const DB_NAME = 'asistencia-agricola';
-const DB_VERSION = 2; // puedes dejarlo así como lo tienes
+
+/**
+ * ✅ IMPORTANTE:
+ * Tu navegador ya tiene la DB en versión 4 (por eso fallaba con 2).
+ * IndexedDB NO permite bajar versión, solo subir.
+ */
+const DB_VERSION = 4;
+
 const STORE_PENDING = 'pending-records';
 const STORE_TRACKING = 'pending-track-points';
 
@@ -67,14 +74,9 @@ interface AsistenciaDB extends DBSchema {
 let dbInstance: IDBPDatabase<AsistenciaDB> | null = null;
 let isRepairing = false;
 
-
 function hasRequiredSchema(db: IDBPDatabase<AsistenciaDB>): boolean {
-  const pendingOk =
-    db.objectStoreNames.contains(STORE_PENDING);
-
-  const trackingOk =
-    db.objectStoreNames.contains(STORE_TRACKING);
-
+  const pendingOk = db.objectStoreNames.contains(STORE_PENDING);
+  const trackingOk = db.objectStoreNames.contains(STORE_TRACKING);
   if (!pendingOk || !trackingOk) return false;
 
   try {
@@ -98,58 +100,85 @@ function hasRequiredSchema(db: IDBPDatabase<AsistenciaDB>): boolean {
   }
 }
 
+/**
+ * ✅ Crea/asegura stores + índices de forma segura.
+ * IMPORTANTE: en upgrade NO se debe usar (db as any).transaction...,
+ * se debe usar el `tx` que te provee idb.
+ */
+function ensureSchema(db: any, tx: any) {
+  // ===== STORE: pending-records =====
+  const pending =
+    db.objectStoreNames.contains(STORE_PENDING)
+      ? tx.objectStore(STORE_PENDING)
+      : db.createObjectStore(STORE_PENDING, { keyPath: 'id' });
+
+  if (!pending.indexNames.contains('user_id')) pending.createIndex('user_id', 'user_id');
+  if (!pending.indexNames.contains('fecha')) pending.createIndex('fecha', 'fecha');
+  if (!pending.indexNames.contains('timestamp')) pending.createIndex('timestamp', 'timestamp');
+  if (!pending.indexNames.contains('user_fecha')) pending.createIndex('user_fecha', ['user_id', 'fecha']);
+
+  // ===== STORE: pending-track-points =====
+  const track =
+    db.objectStoreNames.contains(STORE_TRACKING)
+      ? tx.objectStore(STORE_TRACKING)
+      : db.createObjectStore(STORE_TRACKING, { keyPath: 'id' });
+
+  if (!track.indexNames.contains('user_id')) track.createIndex('user_id', 'user_id');
+  if (!track.indexNames.contains('fecha')) track.createIndex('fecha', 'fecha');
+  if (!track.indexNames.contains('recorded_at')) track.createIndex('recorded_at', 'recorded_at');
+  if (!track.indexNames.contains('user_fecha')) track.createIndex('user_fecha', ['user_id', 'fecha']);
+  if (!track.indexNames.contains('entrada_id')) track.createIndex('entrada_id', 'entrada_id');
+}
 
 export async function getDB(): Promise<IDBPDatabase<AsistenciaDB>> {
   if (dbInstance) return dbInstance;
 
   const open = async () =>
     openDB<AsistenciaDB>(DB_NAME, DB_VERSION, {
-      upgrade(db) {
-        // ===== STORE: pending-records =====
-        let pending: any;
-        if (!db.objectStoreNames.contains(STORE_PENDING)) {
-          pending = db.createObjectStore(STORE_PENDING, { keyPath: 'id' });
-        } else {
-          pending = (db as any).transaction.objectStore(STORE_PENDING);
-        }
-
-        if (!pending.indexNames.contains('user_id')) pending.createIndex('user_id', 'user_id');
-        if (!pending.indexNames.contains('fecha')) pending.createIndex('fecha', 'fecha');
-        if (!pending.indexNames.contains('timestamp')) pending.createIndex('timestamp', 'timestamp');
-        if (!pending.indexNames.contains('user_fecha')) pending.createIndex('user_fecha', ['user_id', 'fecha']);
-
-        // ===== STORE: pending-track-points =====
-        let track: any;
-        if (!db.objectStoreNames.contains(STORE_TRACKING)) {
-          track = db.createObjectStore(STORE_TRACKING, { keyPath: 'id' });
-        } else {
-          track = (db as any).transaction.objectStore(STORE_TRACKING);
-        }
-
-        if (!track.indexNames.contains('user_id')) track.createIndex('user_id', 'user_id');
-        if (!track.indexNames.contains('fecha')) track.createIndex('fecha', 'fecha');
-        if (!track.indexNames.contains('recorded_at')) track.createIndex('recorded_at', 'recorded_at');
-        if (!track.indexNames.contains('user_fecha')) track.createIndex('user_fecha', ['user_id', 'fecha']);
-        if (!track.indexNames.contains('entrada_id')) track.createIndex('entrada_id', 'entrada_id');
+      /**
+       * oldVersion/newVersion existen para upgrades escalonados.
+       * Aquí simplemente “aseguramos esquema” para cualquier versión previa.
+       */
+      upgrade(db, oldVersion, _newVersion, tx) {
+        // Si vienes desde versiones viejas o incompletas, creamos lo necesario.
+        // Esto también funciona si ya estabas en v4: no se ejecuta upgrade.
+        ensureSchema(db as any, tx as any);
+      },
+      // (opcional) si tienes bloqueos por otra pestaña abierta
+      blocked() {
+        console.warn(`[offline-db] Open blocked: cierra otras pestañas de la app (DB: ${DB_NAME}).`);
+      },
+      blocking() {
+        // Si esta pestaña está bloqueando un upgrade en otra, cerramos
+        try {
+          dbInstance?.close();
+        } catch {}
+        dbInstance = null;
+        console.warn('[offline-db] Closing DB because another tab needs an upgrade.');
+      },
+      terminated() {
+        dbInstance = null;
+        console.warn('[offline-db] DB connection terminated (browser policy). Will reopen on demand.');
       },
     });
 
-  // 1) Abrimos
+  // 1) Abrimos (si el navegador ya tiene v4, abre sin error)
   dbInstance = await open();
 
-  // 2) Validamos schema
+  // 2) Validamos schema. Si está roto (casos raros), reparamos.
+  //    ⚠️ Importante: esto NO se ejecuta por el VersionError; ya no existirá.
   if (!hasRequiredSchema(dbInstance) && !isRepairing) {
-    // autocuración
     isRepairing = true;
     try {
       dbInstance.close();
     } catch {}
     dbInstance = null;
 
+    // borrar solo si de verdad está corrupto/incompleto
     await deleteDB(DB_NAME);
 
-    // recrea limpia
     dbInstance = await open();
+    isRepairing = false;
   }
 
   isRepairing = false;
@@ -175,7 +204,6 @@ export async function getPendingRecordsByUser(userId: string): Promise<PendingRe
 
 export async function getPendingRecordsByUserAndDate(userId: string, fecha: string): Promise<PendingRecord[]> {
   const db = await getDB();
-  // índice existe (porque getDB autocura), pero igual dejamos fallback blindado:
   try {
     return db.getAllFromIndex(STORE_PENDING, 'user_fecha', [userId, fecha]);
   } catch {
@@ -221,6 +249,7 @@ export async function clearAllOffline(): Promise<void> {
   await db.clear(STORE_PENDING);
   await db.clear(STORE_TRACKING);
 }
+
 export async function getPendingCount(): Promise<number> {
   const db = await getDB();
   return db.count(STORE_PENDING);

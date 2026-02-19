@@ -68,10 +68,10 @@ export function PublicRoute({ children }: { children: React.ReactNode }) {
   if (isLoading) return <LoadingSpinner />;
 
   if (user) {
-    // ✅ Si ya está logueado: lo mandamos a su home por rol
-    const home = getHomeByRole(role ?? null);
+    const home = getHomeByRole(role);
     return <Navigate to={home} replace />;
   }
 
   return <>{children}</>;
 }
+

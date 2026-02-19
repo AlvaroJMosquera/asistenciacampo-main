@@ -1,24 +1,17 @@
 // src/pages/OperarioMaquinariaInicio.tsx
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Camera, CheckCircle, ArrowLeft } from "lucide-react";
+import { format } from "date-fns"; // ✅ FIX: usa date-fns igual que OperarioMaquinaria
+import { Camera, CheckCircle, ArrowLeft, ChevronsUpDown, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useCamera } from "@/hooks/useCamera";
 import { useGeolocation } from "@/hooks/useGeolocation";
 
-// ✅ Combobox buscable (shadcn)
-import { ChevronsUpDown, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-} from "@/components/ui/command";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem } from "@/components/ui/command";
 
 type FotoTipo = "frente" | "lado_derecho" | "lado_izquierdo" | "trasera" | "cabina";
 
@@ -30,8 +23,9 @@ const FOTO_TIPOS: { key: FotoTipo; label: string }[] = [
   { key: "cabina", label: "Foto interior de cabina" },
 ];
 
-function toIsoDate(d = new Date()) {
-  return d.toISOString().split("T")[0];
+// ✅ FIX: fecha en hora local (igual que OperarioMaquinaria usa format(new Date(), 'yyyy-MM-dd'))
+function getLocalDateISO() {
+  return format(new Date(), "yyyy-MM-dd");
 }
 
 // ---------- Geo cache ----------
@@ -69,7 +63,7 @@ async function resolveGeoRPC(lat: number, lon: number): Promise<{ nom: string; h
   return { nom: data[0].nom, hac_ste: data[0].hac_ste };
 }
 
-// ---------- Local state for photo completion (no SELECT needed) ----------
+// ---------- Local state for photo completion ----------
 function fotosLocalKey(userId: string, entradaId: string, tipo: "inicio" | "fin") {
   return `maq_fotos_local:${userId}:${entradaId}:${tipo}`;
 }
@@ -82,7 +76,12 @@ function readLocalSubidas(userId: string, entradaId: string, tipo: "inicio" | "f
     return null;
   }
 }
-function writeLocalSubidas(userId: string, entradaId: string, tipo: "inicio" | "fin", subidas: Record<string, boolean>) {
+function writeLocalSubidas(
+  userId: string,
+  entradaId: string,
+  tipo: "inicio" | "fin",
+  subidas: Record<string, boolean>
+) {
   try {
     localStorage.setItem(fotosLocalKey(userId, entradaId, tipo), JSON.stringify(subidas));
   } catch {}
@@ -112,16 +111,12 @@ export default function OperarioMaquinariaInicio() {
   const [subidas, setSubidas] = useState<Record<FotoTipo, boolean>>({} as Record<FotoTipo, boolean>);
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
-
-  // ✅ no mostrar ubicación al usuario, pero sí guardarla
   const [geoMsg, setGeoMsg] = useState<string | null>(null);
 
   // Maestro maquinaria
   const [equipos, setEquipos] = useState<MaestroEquipo[]>([]);
   const [equiposLoading, setEquiposLoading] = useState(false);
   const [equipoCodigo, setEquipoCodigo] = useState<string>("");
-
-  // ✅ combobox state
   const [openEquipo, setOpenEquipo] = useState(false);
 
   const equipoSeleccionado = useMemo(
@@ -129,36 +124,41 @@ export default function OperarioMaquinariaInicio() {
     [equipos, equipoCodigo]
   );
 
-  // carga estado local de subidas
+  // Carga estado local de subidas
   useEffect(() => {
     if (!user?.id || !entradaId) return;
     const local = readLocalSubidas(user.id, entradaId, "inicio");
     if (!local) return;
-
     const next: Record<FotoTipo, boolean> = {} as any;
     for (const f of FOTO_TIPOS) if (local[f.key]) next[f.key] = true;
     setSubidas((prev) => ({ ...prev, ...next }));
   }, [user?.id, entradaId]);
 
+  // ✅ completas y puedeFinalizar declarados UNA sola vez
   const completas = useMemo(() => FOTO_TIPOS.filter((f) => subidas[f.key]).length, [subidas]);
+
+  const puedeFinalizar =
+    completas === FOTO_TIPOS.length &&
+    !!equipoCodigo &&
+    !!revisionId &&
+    !loading &&
+    !creating;
 
   // 0) Cargar maestro maquinaria
   useEffect(() => {
     const loadMaestro = async () => {
       setEquiposLoading(true);
       try {
-        // ⚠️ si tu RLS requiere sesión, dejamos la guarda
         const { data: sessionData } = await supabase.auth.getSession();
         if (!sessionData.session) {
           console.warn("Sin sesión aún; no consulto maestro_maquinaria");
           setEquipos([]);
           return;
         }
-
         const { data, error } = await supabase
           .from("maestro_maquinaria")
           .select("cod_equipo, descripcion_equipo, marca, modelo, potencia_hp, seguimiento")
-          .eq("activo", true) // ✅ boolean en JS
+          .eq("activo", true)
           .order("cod_equipo", { ascending: true });
 
         if (error) {
@@ -166,31 +166,26 @@ export default function OperarioMaquinariaInicio() {
           setEquipos([]);
           return;
         }
-
         setEquipos((data || []) as MaestroEquipo[]);
       } finally {
         setEquiposLoading(false);
       }
     };
-
     loadMaestro();
   }, []);
 
-  /**
-   * 1) Crear o recuperar revisión INICIO
-   * - Asegura que se guarde lat/lon + hac_ste/suerte_nom
-   * - Si ya existe y le faltan datos de ubicación -> intenta completar con GPS+RPC y hace UPDATE
-   */
+  // 1) Crear o recuperar revisión INICIO
   useEffect(() => {
     if (!user?.id || !entradaId) return;
 
     const loadOrCreateRevision = async () => {
       setCreating(true);
       try {
-        // 1) buscar existente (más reciente)
         const { data: existing, error: selErr } = await supabase
           .from("revision_maquinaria")
-          .select("id, created_at, updated_at, equipo_codigo, latitud, longitud, hac_ste, suerte_nom, precision_gps, fuera_zona")
+          .select(
+            "id, created_at, updated_at, equipo_codigo, latitud, longitud, hac_ste, suerte_nom, precision_gps, fuera_zona"
+          )
           .eq("user_id", user.id)
           .eq("tipo", "inicio")
           .eq("entrada_id", entradaId)
@@ -203,20 +198,14 @@ export default function OperarioMaquinariaInicio() {
           return;
         }
 
-        // helper: captura geo y (si online) resuelve hacienda/suerte
         const getGeoPayload = async (): Promise<GeoInfo> => {
-          // cache primero
           const cached = readGeoCache(user.id, entradaId, "inicio");
           if (cached) return cached;
 
           let geoPayload: GeoInfo = {
-            lat: null,
-            lon: null,
-            accuracy: null,
-            hac_ste: null,
-            suerte_nom: null,
-            fuera_zona: false,
-            at: new Date().toISOString(),
+            lat: null, lon: null, accuracy: null,
+            hac_ste: null, suerte_nom: null,
+            fuera_zona: false, at: new Date().toISOString(),
           };
 
           try {
@@ -229,7 +218,9 @@ export default function OperarioMaquinariaInicio() {
               return geoPayload;
             }
 
-            const resolved = navigator.onLine ? await resolveGeoRPC(pos.latitude, pos.longitude) : null;
+            const resolved = navigator.onLine
+              ? await resolveGeoRPC(pos.latitude, pos.longitude)
+              : null;
 
             geoPayload = {
               lat: pos.latitude,
@@ -241,7 +232,7 @@ export default function OperarioMaquinariaInicio() {
               at: new Date().toISOString(),
             };
 
-            if (!resolved) setGeoMsg("GPS OK, pero no se resolvió suerte/hacienda (fuera de zona o sin internet).");
+            if (!resolved) setGeoMsg("GPS OK, pero no se resolvió suerte/hacienda.");
             else setGeoMsg(null);
 
             writeGeoCache(user.id, entradaId, "inicio", geoPayload);
@@ -258,27 +249,21 @@ export default function OperarioMaquinariaInicio() {
           const row = existing[0];
           setRevisionId(row.id);
 
-          // precargar equipo si ya estaba
           if (row.equipo_codigo && row.equipo_codigo !== "SIN_DEFINIR") {
             setEquipoCodigo(row.equipo_codigo);
           }
 
-          // ✅ si NO guardó ubicación antes, intentamos completarla ahora (UPDATE)
           const faltaGeo =
-            row.latitud == null ||
-            row.longitud == null ||
-            row.hac_ste == null ||
-            row.suerte_nom == null;
+            row.latitud == null || row.longitud == null ||
+            row.hac_ste == null || row.suerte_nom == null;
 
           if (faltaGeo) {
             const geoPayload = await getGeoPayload();
-
-            // si hay al menos coords, actualizamos (aunque no haya nombre)
             if (geoPayload.lat != null && geoPayload.lon != null) {
               const { error: updErr } = await supabase
                 .from("revision_maquinaria")
                 .update({
-                  timestamp: new Date().toISOString(), // opcional, puedes omitir
+                  timestamp: new Date().toISOString(),
                   latitud: geoPayload.lat,
                   longitud: geoPayload.lon,
                   precision_gps: geoPayload.accuracy,
@@ -287,11 +272,9 @@ export default function OperarioMaquinariaInicio() {
                   suerte_nom: geoPayload.suerte_nom,
                 })
                 .eq("id", row.id);
-
               if (updErr) console.error("[revision_maquinaria update geo]", updErr.message);
             }
           }
-
           return;
         }
 
@@ -320,7 +303,6 @@ export default function OperarioMaquinariaInicio() {
           console.error("[revision_maquinaria insert]", insErr.message);
           return;
         }
-
         setRevisionId(created.id);
       } finally {
         setCreating(false);
@@ -328,65 +310,54 @@ export default function OperarioMaquinariaInicio() {
     };
 
     loadOrCreateRevision();
-  }, [user?.id, entradaId, getCurrentPosition]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, entradaId]);
 
-  // ✅ Selección de equipo -> UPDATE equipo_codigo
+  // Selección de equipo -> UPDATE equipo_codigo
   const onSelectEquipo = async (cod: string) => {
     setEquipoCodigo(cod);
-
     if (!revisionId) return;
-
-    const { error } = await supabase.from("revision_maquinaria").update({ equipo_codigo: cod }).eq("id", revisionId);
-
+    const { error } = await supabase
+      .from("revision_maquinaria")
+      .update({ equipo_codigo: cod })
+      .eq("id", revisionId);
     if (error) console.error("[revision_maquinaria update equipo_codigo]", error.message);
   };
 
-  /**
-   * 2) Capturar y subir foto
-   */
+  // 2) Capturar y subir foto
   const handleCapture = async (tipo: FotoTipo) => {
     if (!revisionId || !user?.id || !entradaId) return;
-
     try {
       setLoading(true);
-
       if (!equipoCodigo) {
         console.error("Debe seleccionar equipo antes de subir fotos");
         return;
       }
-
       const { data: s } = await supabase.auth.getSession();
       if (!s.session) {
         console.error("No hay session -> request está yendo como anon");
         return;
       }
-
       const blob = await capturePhoto();
       if (!blob) {
         console.error("capturePhoto() no devolvió imagen");
         return;
       }
 
-      const today = toIsoDate();
+      // ✅ FIX: fecha local para el path de storage también
+      const today = getLocalDateISO();
       const filePath = `${user.id}/maquinaria/${today}/inicio/${revisionId}/${tipo}.webp`;
 
-      const { error: uploadErr } = await supabase.storage.from("attendance-photos").upload(filePath, blob, {
-        upsert: true,
-        contentType: "image/webp",
-      });
+      const { error: uploadErr } = await supabase.storage
+        .from("attendance-photos")
+        .upload(filePath, blob, { upsert: true, contentType: "image/webp" });
       if (uploadErr) {
         console.error("[storage upload]", uploadErr.message);
         return;
       }
 
       const { error: upsertErr } = await supabase.from("revision_maquinaria_fotos").upsert(
-        {
-          revision_id: revisionId,
-          user_id: user.id,
-          foto_tipo: tipo,
-          foto_path: filePath,
-          foto_url: null,
-        },
+        { revision_id: revisionId, user_id: user.id, foto_tipo: tipo, foto_path: filePath, foto_url: null },
         { onConflict: "revision_id,foto_tipo" } as any
       );
       if (upsertErr) {
@@ -402,20 +373,18 @@ export default function OperarioMaquinariaInicio() {
     }
   };
 
-  /**
-   * 3) Finalizar revisión
-   */
+  // ✅ FIX PRINCIPAL: usa getLocalDateISO() para que la key coincida con OperarioMaquinaria
   const finalizar = () => {
-    if (completas !== FOTO_TIPOS.length) return;
-    const today = toIsoDate();
-    localStorage.setItem(`maq_revision_complete:${user?.id}:${today}:inicio`, "1");
-    navigate("/OperarioMaquinaria");
+    if (!puedeFinalizar) return;
+    const dateISO = getLocalDateISO(); // ✅ hora local, NO UTC
+    localStorage.setItem(`maq_revision_complete:${user?.id}:${dateISO}:inicio`, "1");
+    navigate("/OperarioMaquinaria", { replace: true });
   };
 
   return (
     <div className="p-4 max-w-lg mx-auto space-y-4">
       <div className="flex items-center gap-2">
-        <Button variant="ghost" size="icon" onClick={() => navigate(-1)} disabled={loading}>
+        <Button type="button" variant="ghost" size="icon" onClick={() => navigate(-1)} disabled={loading}>
           <ArrowLeft className="h-5 w-5" />
         </Button>
         <h1 className="text-xl font-semibold">Revisión inicio turno</h1>
@@ -425,13 +394,14 @@ export default function OperarioMaquinariaInicio() {
         Debes capturar las <strong>5 fotos obligatorias</strong> de la maquinaria antes de continuar.
       </p>
 
-      {/* ✅ Equipo (combobox buscable) */}
+      {/* Equipo (combobox buscable) */}
       <div className="rounded-lg border p-3 space-y-2">
         <div className="text-sm font-medium">Equipo</div>
 
         <Popover open={openEquipo} onOpenChange={setOpenEquipo}>
           <PopoverTrigger asChild>
             <Button
+              type="button"
               variant="outline"
               role="combobox"
               aria-expanded={openEquipo}
@@ -444,8 +414,8 @@ export default function OperarioMaquinariaInicio() {
                     return e ? `${e.cod_equipo} — ${e.descripcion_equipo ?? "—"}` : equipoCodigo;
                   })()
                 : equiposLoading
-                  ? "Cargando equipos..."
-                  : "Selecciona el equipo..."}
+                ? "Cargando equipos..."
+                : "Selecciona el equipo..."}
               <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
             </Button>
           </PopoverTrigger>
@@ -460,7 +430,6 @@ export default function OperarioMaquinariaInicio() {
             >
               <CommandInput placeholder="Buscar por código o descripción..." />
               <CommandEmpty>No se encontraron equipos.</CommandEmpty>
-
               <CommandGroup className="max-h-64 overflow-auto">
                 {equipos.map((e) => {
                   const itemValue = `${e.cod_equipo} ${e.descripcion_equipo ?? ""}`;
@@ -474,7 +443,10 @@ export default function OperarioMaquinariaInicio() {
                       }}
                     >
                       <Check
-                        className={cn("mr-2 h-4 w-4", equipoCodigo === e.cod_equipo ? "opacity-100" : "opacity-0")}
+                        className={cn(
+                          "mr-2 h-4 w-4",
+                          equipoCodigo === e.cod_equipo ? "opacity-100" : "opacity-0"
+                        )}
                       />
                       <div className="flex flex-col">
                         <span className="text-sm font-medium">{e.cod_equipo}</span>
@@ -507,15 +479,10 @@ export default function OperarioMaquinariaInicio() {
         </div>
       </div>
 
-      {/* ✅ NOTA: ubicación NO se muestra al usuario (pero sí se guarda en DB).
-          Si quieres ver diagnóstico temporal, descomenta:
-          <p className="text-xs text-muted-foreground">{geoMsg}</p>
-      */}
-      {false && geoMsg ? <p className="text-xs text-muted-foreground">{geoMsg}</p> : null}
-
       <div className="space-y-3">
         {FOTO_TIPOS.map((f) => (
           <Button
+            type="button"
             key={f.key}
             className="w-full justify-start"
             variant={subidas[f.key] ? "secondary" : "outline"}
@@ -528,7 +495,9 @@ export default function OperarioMaquinariaInicio() {
               <Camera className="h-4 w-4 mr-2" />
             )}
             {f.label}
-            {!equipoCodigo ? <span className="ml-auto text-xs text-muted-foreground">(elige equipo)</span> : null}
+            {!equipoCodigo ? (
+              <span className="ml-auto text-xs text-muted-foreground">(elige equipo)</span>
+            ) : null}
           </Button>
         ))}
       </div>
@@ -537,8 +506,28 @@ export default function OperarioMaquinariaInicio() {
         Progreso: {completas} / {FOTO_TIPOS.length}
       </p>
 
-      <Button className="w-full" disabled={completas !== FOTO_TIPOS.length} onClick={finalizar}>
-        Finalizar revisión inicio
+      {/* DEBUG TEMPORAL — elimina este bloque cuando confirmes que funciona */}
+      <div className="text-xs text-amber-600 bg-amber-50 rounded p-2 space-y-1 border border-amber-200">
+        <div>fotos: {completas}/{FOTO_TIPOS.length} {completas === FOTO_TIPOS.length ? "✓" : "✗"}</div>
+        <div>equipo: "{equipoCodigo}" {equipoCodigo ? "✓" : "✗"}</div>
+        <div>revisionId: {revisionId ? `${revisionId.slice(0, 8)}… ✓` : "null ✗"}</div>
+        <div>loading: {loading ? "sí" : "no"} | creating: {creating ? "sí" : "no"}</div>
+        <div>dateISO: {getLocalDateISO()}</div>
+        <div>key: maq_revision_complete:{user?.id?.slice(0, 6)}…:{getLocalDateISO()}:inicio</div>
+        <div>puedeFinalizar: {puedeFinalizar ? "✅ SÍ" : "❌ NO"}</div>
+      </div>
+
+      <Button
+        type="button"
+        className="w-full"
+        disabled={!puedeFinalizar}
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          finalizar();
+        }}
+      >
+        {creating ? "Preparando revisión..." : "Finalizar revisión inicio"}
       </Button>
     </div>
   );
