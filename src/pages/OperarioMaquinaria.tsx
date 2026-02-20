@@ -10,6 +10,7 @@ import {
   Camera,
   MapPin,
   ClipboardCheck,
+  Wrench,
 } from 'lucide-react';
 import { useNavigate, Link } from 'react-router-dom';
 
@@ -48,8 +49,11 @@ type RevisionState = {
   required: number;
 };
 
-// ✅ Requeridas por revisión: 5 (frente, lado_der, lado_izq, trasera, cabina)
+// ✅ Requeridas por revisión maquinaria: 5 (frente, lado_der, lado_izq, trasera, cabina)
 const REQUIRED_MAQUINARIA_PHOTOS = 5;
+
+// ✅ Requeridas por revisión implemento: 2 (frente, lateral)
+const REQUIRED_IMPLEMENTO_PHOTOS = 2;
 
 // ✅ Evidencia 1 habilitada tras X tiempo (cambia aquí)
 const FOLLOWUP_REQUIRED_MS = 60 * 1000;
@@ -74,7 +78,7 @@ function writeLocalFollowups(userId: string, entradaId: string, rows: FollowUpRo
   } catch {}
 }
 
-// ---------- Local storage: revisiones (estado completo) ----------
+// ---------- Local storage: revisiones maquinaria ----------
 function revisionLocalKey(userId: string, dateISO: string, tipo: RevisionTipo) {
   return `maq_revision_complete:${userId}:${dateISO}:${tipo}`;
 }
@@ -91,27 +95,35 @@ function writeLocalRevisionComplete(userId: string, dateISO: string, tipo: Revis
   } catch {}
 }
 
+// ---------- Local storage: revisiones implemento ----------
+function implementoLocalKey(userId: string, dateISO: string, tipo: RevisionTipo) {
+  return `implemento_revision_complete:${userId}:${dateISO}:${tipo}`;
+}
+function readLocalImplementoComplete(userId: string, dateISO: string, tipo: RevisionTipo) {
+  try {
+    return localStorage.getItem(implementoLocalKey(userId, dateISO, tipo)) === '1';
+  } catch {
+    return false;
+  }
+}
+
 // ---------- Local storage: revisiones (pendientes offline) ----------
 type PendingRevision = {
-  id: string; // uuid local
+  id: string;
   user_id: string;
   entrada_id: string;
   tipo: RevisionTipo;
   equipo_codigo: string;
   timestamp: string;
-
-  // GPS + ubicación (si se pudo)
   latitud: number | null;
   longitud: number | null;
   precision_gps: number | null;
   fuera_zona: boolean;
   hac_ste: string | null;
   suerte_nom: string | null;
-
-  // fotos tomadas (paths locales o marcador)
   photos: Array<{
     foto_tipo: 'frente' | 'lado_derecho' | 'lado_izquierdo' | 'trasera' | 'cabina';
-    foto_url: string; // 'local://pending' si todavía no está en storage
+    foto_url: string;
     timestamp: string;
   }>;
 };
@@ -164,13 +176,6 @@ async function resolveGeo(lat: number, lon: number): Promise<GeoResult> {
   return { nom: data[0].nom, hac_ste: data[0].hac_ste };
 }
 
-/**
- * ✅ Sync de revisiones pendientes (metadata) cuando vuelve internet.
- * OJO: aquí sincronizamos la tabla revision_maquinaria (no las fotos, porque tú las subes en la pantalla de /inicio o /fin).
- * Si tus pantallas de revisión ya suben fotos directo a storage+tabla revision_maquinaria_fotos, entonces:
- * - solo necesitamos crear el registro en revision_maquinaria al iniciar.
- * - si estás offline, guardamos pendiente aquí, y al volver online lo insertamos.
- */
 async function syncPendingRevisions(userId: string): Promise<{ synced: number; failed: number }> {
   if (!navigator.onLine) return { synced: 0, failed: 0 };
 
@@ -186,7 +191,6 @@ async function syncPendingRevisions(userId: string): Promise<{ synced: number; f
 
   for (const item of mine) {
     try {
-      // insertar revision_maquinaria (requiere que agregaste columnas: timestamp, latitud, longitud, precision_gps, fuera_zona, hac_ste, suerte_nom)
       const payload: any = {
         id: item.id,
         user_id: item.user_id,
@@ -204,7 +208,6 @@ async function syncPendingRevisions(userId: string): Promise<{ synced: number; f
 
       const { error } = await supabase.from('revision_maquinaria').insert(payload);
       if (error) {
-        // duplicado (ya se insertó) -> lo damos por sincronizado
         // @ts-ignore
         if (error.code === '23505') {
           synced++;
@@ -225,10 +228,6 @@ async function syncPendingRevisions(userId: string): Promise<{ synced: number; f
   return { synced, failed };
 }
 
-/**
- * ✅ Crea (o deja pendiente) el registro revision_maquinaria al momento de arrancar la revisión
- * Esto asegura: ubicación + nombre guardados SIEMPRE que se pueda.
- */
 async function createRevisionRecord(params: {
   userId: string;
   entradaId: string;
@@ -239,7 +238,6 @@ async function createRevisionRecord(params: {
   const { userId, entradaId, tipo, equipoCodigo, getCurrentPosition } = params;
 
   try {
-    // GPS best effort
     let location: { latitude: number; longitude: number; accuracy: number } | null = null;
     try {
       location = await getCurrentPosition();
@@ -247,7 +245,6 @@ async function createRevisionRecord(params: {
 
     const hasCoords = location?.latitude != null && location?.longitude != null;
 
-    // Geo solo online
     let geo: GeoResult = null;
     if (navigator.onLine && hasCoords) {
       geo = await resolveGeo(location!.latitude, location!.longitude);
@@ -263,7 +260,6 @@ async function createRevisionRecord(params: {
       tipo,
       equipo_codigo: equipoCodigo,
       timestamp: new Date().toISOString(),
-
       latitud: location?.latitude ?? null,
       longitud: location?.longitude ?? null,
       precision_gps: location?.accuracy ?? null,
@@ -287,7 +283,6 @@ async function createRevisionRecord(params: {
       };
     }
 
-    // OFFLINE: guardar pendiente para sync luego
     const pending = readPendingRevisions();
     const next: PendingRevision[] = [
       ...pending.filter(
@@ -300,7 +295,6 @@ async function createRevisionRecord(params: {
         tipo,
         equipo_codigo: equipoCodigo,
         timestamp: payload.timestamp,
-
         latitud: payload.latitud,
         longitud: payload.longitud,
         precision_gps: payload.precision_gps,
@@ -345,10 +339,7 @@ export default function OperarioMaquinaria() {
   } = useAttendance();
 
   const { capturePhoto, error: cameraError } = useCamera();
-  const { getCurrentPosition } = useLocationTracking(null) as any; // ❗ si tu hook NO expone esto, quítalo
-  // ✅ Si tu useGeolocation ya existe (en useAttendance), usa ese hook aquí también:
-  // import { useGeolocation } from '@/hooks/useGeolocation';
-  // const { getCurrentPosition } = useGeolocation();
+  const { getCurrentPosition } = useLocationTracking(null) as any;
 
   const [modalState, setModalState] = useState<{
     isOpen: boolean;
@@ -368,7 +359,7 @@ export default function OperarioMaquinaria() {
   } | null>(null);
   const [geoMsg, setGeoMsg] = useState<string | null>(null);
 
-  // Revisiones
+  // Revisiones maquinaria
   const dateISO = format(new Date(), 'yyyy-MM-dd');
   const [rev, setRev] = useState<RevisionState>({
     loading: false,
@@ -379,13 +370,17 @@ export default function OperarioMaquinaria() {
     required: REQUIRED_MAQUINARIA_PHOTOS,
   });
 
+  // Revisiones implemento
+  const [implementoInicioComplete, setImplementoInicioComplete] = useState(false);
+  const [implementoFinComplete, setImplementoFinComplete] = useState(false);
+  const [implementoLoading, setImplementoLoading] = useState(false);
+
   // Evidencias
   const [remoteFollowups, setRemoteFollowups] = useState<FollowUpRow[]>([]);
   const [localFollowups, setLocalFollowups] = useState<FollowUpRow[]>([]);
   const [isLoadingFollowups, setIsLoadingFollowups] = useState(false);
 
-  // equipo seleccionado (si tú lo seleccionas en otra pantalla, cámbialo)
-  const [equipoCodigo, setEquipoCodigo] = useState<string>('EQ-000');
+  const [equipoCodigo] = useState<string>('EQ-000');
 
   // Ticker (contador offline)
   const [tick, setTick] = useState(0);
@@ -409,7 +404,7 @@ export default function OperarioMaquinaria() {
     });
   }, []);
 
-  // “entrada activa”
+  // "entrada activa"
   const activeEntrada = useMemo(() => {
     const sorted = [...todayRecords].sort(
       (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
@@ -425,22 +420,19 @@ export default function OperarioMaquinaria() {
 
   const activeEntradaId = activeEntrada?.id ?? null;
 
-  // Tracking ubicación mientras hay entrada abierta
   useLocationTracking(activeEntradaId);
 
-  // Cargar registros al montar
   useEffect(() => {
     getTodayRecords();
   }, [getTodayRecords]);
 
-  // --------------------- Revisiones: status remoto + fallback local ---------------------
+  // --------------------- Revisiones maquinaria: status remoto + fallback local ---------------------
   const loadRevisionStatus = useCallback(async () => {
     if (!user?.id) return;
 
     const localInicio = readLocalRevisionComplete(user.id, dateISO, 'inicio');
     const localFin = readLocalRevisionComplete(user.id, dateISO, 'fin');
 
-    // si offline: solo local
     if (!navigator.onLine) {
       setRev((prev) => ({
         ...prev,
@@ -479,17 +471,14 @@ export default function OperarioMaquinaria() {
 
     const countFotos = async (revisionId: string | null) => {
       if (!revisionId) return 0;
-
       const { count, error: cErr } = await supabase
         .from('revision_maquinaria_fotos')
         .select('id', { count: 'exact', head: true })
         .eq('revision_id', revisionId);
-
       if (cErr) {
         console.warn('[revision_maquinaria_fotos] error:', cErr.message);
         return 0;
       }
-
       return count ?? 0;
     };
 
@@ -499,7 +488,6 @@ export default function OperarioMaquinaria() {
     const inicioCompleteRemote = inicioCount >= REQUIRED_MAQUINARIA_PHOTOS;
     const finCompleteRemote = finCount >= REQUIRED_MAQUINARIA_PHOTOS;
 
-    // ✅ persistir local (fallback)
     writeLocalRevisionComplete(user.id, dateISO, 'inicio', inicioCompleteRemote || localInicio);
     writeLocalRevisionComplete(user.id, dateISO, 'fin', finCompleteRemote || localFin);
 
@@ -513,6 +501,71 @@ export default function OperarioMaquinaria() {
     });
   }, [user?.id, dateISO]);
 
+  // --------------------- Revisiones implemento: status ---------------------
+  const loadImplementoStatus = useCallback(async () => {
+    if (!user?.id) return;
+
+    const localInicio = readLocalImplementoComplete(user.id, dateISO, 'inicio');
+    const localFin = readLocalImplementoComplete(user.id, dateISO, 'fin');
+
+    if (!navigator.onLine) {
+      setImplementoInicioComplete(localInicio);
+      setImplementoFinComplete(localFin);
+      return;
+    }
+
+    setImplementoLoading(true);
+
+    try {
+      const startOfDay = `${dateISO} 00:00:00`;
+      const endOfDay = `${dateISO} 23:59:59`;
+
+      const { data: revisions, error: revErr } = await supabase
+        .from('revision_implemento')
+        .select('id, tipo, created_at')
+        .eq('user_id', user.id)
+        .gte('created_at', startOfDay)
+        .lte('created_at', endOfDay);
+
+      if (revErr) {
+        console.warn('[revision_implemento] error:', revErr.message);
+        setImplementoInicioComplete(localInicio);
+        setImplementoFinComplete(localFin);
+        return;
+      }
+
+      const inicioId = (revisions || []).find((r: any) => r.tipo === 'inicio')?.id ?? null;
+      const finId = (revisions || []).find((r: any) => r.tipo === 'fin')?.id ?? null;
+
+      const countFotos = async (revisionId: string | null) => {
+        if (!revisionId) return 0;
+        const { count, error: cErr } = await supabase
+          .from('revision_implemento_fotos')
+          .select('id', { count: 'exact', head: true })
+          .eq('revision_id', revisionId);
+        if (cErr) return 0;
+        return count ?? 0;
+      };
+
+      const inicioCount = await countFotos(inicioId);
+      const finCount = await countFotos(finId);
+
+      const inicioCompleteRemote = inicioCount >= REQUIRED_IMPLEMENTO_PHOTOS;
+      const finCompleteRemote = finCount >= REQUIRED_IMPLEMENTO_PHOTOS;
+
+      // persist local fallback
+      try {
+        localStorage.setItem(implementoLocalKey(user.id, dateISO, 'inicio'), (inicioCompleteRemote || localInicio) ? '1' : '0');
+        localStorage.setItem(implementoLocalKey(user.id, dateISO, 'fin'), (finCompleteRemote || localFin) ? '1' : '0');
+      } catch {}
+
+      setImplementoInicioComplete(inicioCompleteRemote || localInicio);
+      setImplementoFinComplete(finCompleteRemote || localFin);
+    } finally {
+      setImplementoLoading(false);
+    }
+  }, [user?.id, dateISO]);
+
   // --------------------- Evidencias: remoto + local ---------------------
   const loadFollowups = useCallback(async () => {
     if (!activeEntrada?.id || !user?.id) {
@@ -521,10 +574,8 @@ export default function OperarioMaquinaria() {
       return;
     }
 
-    // local siempre
     setLocalFollowups(readLocalFollowups(user.id, activeEntrada.id));
 
-    // remoto solo si hay red
     if (!navigator.onLine) {
       setRemoteFollowups([]);
       return;
@@ -543,7 +594,8 @@ export default function OperarioMaquinaria() {
 
   useEffect(() => {
     loadRevisionStatus();
-  }, [loadRevisionStatus]);
+    loadImplementoStatus();
+  }, [loadRevisionStatus, loadImplementoStatus]);
 
   useEffect(() => {
     loadFollowups();
@@ -555,23 +607,21 @@ export default function OperarioMaquinaria() {
       if (!user?.id) return;
 
       try {
-        // ✅ sync evidencias
         await syncPendingFollowups?.();
-
-        // ✅ sync revisiones (metadata)
         await syncPendingRevisions(user.id);
       } catch (e) {
         console.error(e);
       } finally {
         await getTodayRecords();
         await loadRevisionStatus();
+        await loadImplementoStatus();
         await loadFollowups();
       }
     };
 
     window.addEventListener('online', onOnline);
     return () => window.removeEventListener('online', onOnline);
-  }, [user?.id, syncPendingFollowups, getTodayRecords, loadRevisionStatus, loadFollowups]);
+  }, [user?.id, syncPendingFollowups, getTodayRecords, loadRevisionStatus, loadImplementoStatus, loadFollowups]);
 
   // Unificar evidencias (local pisa remoto)
   const followups = useMemo(() => {
@@ -584,12 +634,13 @@ export default function OperarioMaquinaria() {
   const hasFollow1 = followups.some((f) => f.evidencia_n === 1);
   const hasFollow2 = followups.some((f) => f.evidencia_n === 2);
 
-  // Evidencia 1 habilitada a las X desde la entrada (solo si revisión inicio completa)
+  // Evidencia 1 habilitada a las X desde la entrada (solo si revisión maquinaria inicio completa)
   const follow1EnabledInfo = useMemo(() => {
     void tick;
 
     if (!activeEntrada) return { enabled: false, remainingText: 'Primero marca entrada' };
-    if (!rev.inicioComplete) return { enabled: false, remainingText: 'Completa revisión INICIO' };
+    if (!rev.inicioComplete) return { enabled: false, remainingText: 'Completa revisión INICIO maquinaria' };
+    if (!implementoInicioComplete) return { enabled: false, remainingText: 'Completa revisión INICIO implemento' };
 
     const start = new Date(activeEntrada.timestamp).getTime();
     const now = Date.now();
@@ -602,42 +653,49 @@ export default function OperarioMaquinaria() {
     const secs = Math.max(0, Math.ceil((remaining % (60 * 1000)) / 1000));
 
     return { enabled: false, remainingText: `${mins}m ${secs}s` };
-  }, [activeEntrada, tick, rev.inicioComplete]);
+  }, [activeEntrada, tick, rev.inicioComplete, implementoInicioComplete]);
 
-  // Evidencia 2: solo después de evidencia 1, y revisión inicio completa
-  const follow2Enabled = !!activeEntrada && rev.inicioComplete && hasFollow1;
+  // Evidencia 2: solo después de evidencia 1, y revisiones inicio completas
+  const follow2Enabled = !!activeEntrada && rev.inicioComplete && implementoInicioComplete && hasFollow1;
 
-  // Revisión FIN: solo después de ev1 y ev2
-  const finRevisionEnabled = !!activeEntrada && rev.inicioComplete && hasFollow1 && hasFollow2;
+  // Revisión implemento FIN: después de ev1 y ev2
+  const implementoFinEnabled = !!activeEntrada && rev.inicioComplete && implementoInicioComplete && hasFollow1 && hasFollow2;
 
-  // ✅ Crear registro revision_maquinaria (online u offline) antes de navegar
+  // Revisión maquinaria FIN: después de ev1 + ev2 + implemento fin
+  const finRevisionEnabled = !!activeEntrada && rev.inicioComplete && implementoInicioComplete && hasFollow1 && hasFollow2 && implementoFinComplete;
+
+  // ✅ navegar a revisión maquinaria
   const goRevision = async (tipo: RevisionTipo) => {
     if (!activeEntrada?.id || !user?.id) {
       showError('entrada', 'Primero debes marcar la ENTRADA para iniciar.');
       return;
     }
 
-    // secuencia
     if (tipo === 'fin') {
       if (!rev.inicioComplete) {
-        showError('entrada', 'Debes completar la revisión de INICIO antes de la revisión de FIN.');
+        showError('entrada', 'Debes completar la revisión de INICIO de maquinaria antes de la revisión de FIN.');
+        return;
+      }
+      if (!implementoInicioComplete) {
+        showError('entrada', 'Debes completar la revisión de INICIO de implemento antes.');
         return;
       }
       if (!hasFollow1 || !hasFollow2) {
-        showError('entrada', 'Debes completar Evidencia 1 y Evidencia 2 antes de la revisión de FIN.');
+        showError('entrada', 'Debes completar Evidencia 1 y Evidencia 2 antes de la revisión de FIN de maquinaria.');
+        return;
+      }
+      if (!implementoFinComplete) {
+        showError('entrada', 'Debes completar la revisión de FIN de implemento antes.');
         return;
       }
     }
 
-    // ✅ aquí se crea el registro con GPS+ubicación y se obtiene revisionId
     const created = await createRevisionRecord({
       userId: user.id,
       entradaId: activeEntrada.id,
       tipo,
       equipoCodigo,
-      // ⚠️ si no tienes hook de geolocalización aquí, importa useGeolocation y pásalo
       getCurrentPosition: async () => {
-        // fallback mínimo: sin GPS
         return { latitude: 0, longitude: 0, accuracy: 0 };
       },
     });
@@ -647,25 +705,57 @@ export default function OperarioMaquinaria() {
       return;
     }
 
-    // navegar con revision_id (IMPORTANTE para que la pantalla de fotos use ese id)
     navigate(`/OperarioMaquinaria/${tipo}?entrada_id=${activeEntrada.id}&revision_id=${created.revisionId}`);
+  };
+
+  // ✅ navegar a revisión implemento
+  const goImplementoRevision = (tipo: RevisionTipo) => {
+    if (!activeEntrada?.id || !user?.id) {
+      showError('entrada', 'Primero debes marcar la ENTRADA para iniciar.');
+      return;
+    }
+
+    if (tipo === 'inicio' && !rev.inicioComplete) {
+      showError('entrada', 'Debes completar la revisión de INICIO de maquinaria antes del implemento.');
+      return;
+    }
+
+    if (tipo === 'fin') {
+      if (!implementoInicioComplete) {
+        showError('entrada', 'Debes completar la revisión de INICIO del implemento primero.');
+        return;
+      }
+      if (!hasFollow1 || !hasFollow2) {
+        showError('entrada', 'Debes completar Evidencia 1 y Evidencia 2 antes de la revisión FIN del implemento.');
+        return;
+      }
+    }
+
+    navigate(`/OperarioMaquinariaImplemento/${tipo}?entrada_id=${activeEntrada.id}`);
   };
 
   // Marcar entrada/salida
   const handleMarkAttendance = async (tipo: 'entrada' | 'salida') => {
     try {
-      // 🔒 Salida requiere: inicio + ev1 + ev2 + fin
       if (tipo === 'salida') {
         if (!rev.inicioComplete) {
-          showError('salida', 'Debes completar la Revisión de INICIO antes de marcar la salida.');
+          showError('salida', 'Debes completar la Revisión de INICIO de maquinaria antes de marcar la salida.');
+          return;
+        }
+        if (!implementoInicioComplete) {
+          showError('salida', 'Debes completar la Revisión de INICIO de implemento antes de marcar la salida.');
           return;
         }
         if (!hasFollow1 || !hasFollow2) {
           showError('salida', 'Debes completar Evidencia 1 y Evidencia 2 antes de marcar la salida.');
           return;
         }
+        if (!implementoFinComplete) {
+          showError('salida', 'Debes completar la Revisión de FIN de implemento antes de marcar la salida.');
+          return;
+        }
         if (!rev.finComplete) {
-          showError('salida', 'Debes completar la Revisión de FIN antes de marcar la salida.');
+          showError('salida', 'Debes completar la Revisión de FIN de maquinaria antes de marcar la salida.');
           return;
         }
       }
@@ -685,9 +775,9 @@ export default function OperarioMaquinaria() {
 
       await getTodayRecords();
       await loadRevisionStatus();
+      await loadImplementoStatus();
       await loadFollowups();
 
-      // Geo modal solo en entrada
       if (tipo === 'entrada') {
         setGeoCoords(result.coords ?? null);
         setGeoInfo(result.geo ?? null);
@@ -721,9 +811,12 @@ export default function OperarioMaquinaria() {
         return;
       }
 
-      // 🔒 Reglas secuencia
       if (!rev.inicioComplete) {
-        showError('entrada', 'Debes completar la revisión de INICIO antes de registrar evidencias.');
+        showError('entrada', 'Debes completar la revisión de INICIO de maquinaria antes de registrar evidencias.');
+        return;
+      }
+      if (!implementoInicioComplete) {
+        showError('entrada', 'Debes completar la revisión de INICIO de implemento antes de registrar evidencias.');
         return;
       }
       if (n === 1 && !follow1EnabledInfo.enabled) return;
@@ -731,7 +824,6 @@ export default function OperarioMaquinaria() {
 
       const blob = await capturePhoto();
 
-      // OFFLINE: primero local
       const localRow: FollowUpRow = {
         evidencia_n: n,
         foto_url: 'local://pending',
@@ -751,7 +843,6 @@ export default function OperarioMaquinaria() {
         return;
       }
 
-      // si hay red, intenta sync inmediato
       if (navigator.onLine) {
         try {
           await syncPendingFollowups?.();
@@ -771,46 +862,48 @@ export default function OperarioMaquinaria() {
     }
   };
 
-  const canExit = rev.inicioComplete && hasFollow1 && hasFollow2 && rev.finComplete;
+  const canExit =
+    rev.inicioComplete &&
+    implementoInicioComplete &&
+    hasFollow1 &&
+    hasFollow2 &&
+    implementoFinComplete &&
+    rev.finComplete;
 
   return (
     <div className="min-h-screen flex flex-col bg-background">
       <header className="sticky top-0 z-10 bg-card border-b px-4 py-3 shadow-sm">
-  <div className="max-w-lg mx-auto w-full flex items-center justify-between">
-    {/* Left: Logo + Name/Date */}
-    <div className="flex items-center gap-3 min-w-0">
-      <img
-        src="/logo_ipsa.JPG.jpeg"
-        alt="Logo IPSA"
-        className="h-12 w-auto object-contain shrink-0"
-      />
+        <div className="max-w-lg mx-auto w-full flex items-center justify-between">
+          <div className="flex items-center gap-3 min-w-0">
+            <img
+              src="/logo_ipsa.JPG.jpeg"
+              alt="Logo IPSA"
+              className="h-12 w-auto object-contain shrink-0"
+            />
+            <div className="min-w-0 flex flex-col">
+              <p className="text-base font-semibold text-foreground leading-tight truncate">
+                {profile?.nombre || 'Usuario'}
+              </p>
+              <p className="text-sm text-muted-foreground capitalize leading-tight truncate">
+                {today}
+              </p>
+            </div>
+          </div>
 
-      <div className="min-w-0 flex flex-col">
-        <p className="text-base font-semibold text-foreground leading-tight truncate">
-          {profile?.nombre || "Usuario"}
-        </p>
-        <p className="text-sm text-muted-foreground capitalize leading-tight truncate">
-          {today}
-        </p>
-      </div>
-    </div>
-
-    {/* Right: Actions */}
-    <div className="flex items-center gap-2 shrink-0">
-      {isSupervisor && (
-        <Link to="/supervisor">
-          <Button variant="outline" size="icon" aria-label="Panel supervisor">
-            <Settings className="h-4 w-4" />
-          </Button>
-        </Link>
-      )}
-      <Button variant="ghost" size="sm" onClick={signOut}>
-        Salir
-      </Button>
-    </div>
-  </div>
-</header>
-
+          <div className="flex items-center gap-2 shrink-0">
+            {isSupervisor && (
+              <Link to="/supervisor">
+                <Button variant="outline" size="icon" aria-label="Panel supervisor">
+                  <Settings className="h-4 w-4" />
+                </Button>
+              </Link>
+            )}
+            <Button variant="ghost" size="sm" onClick={signOut}>
+              Salir
+            </Button>
+          </div>
+        </div>
+      </header>
 
       <main className="flex-1 p-4 space-y-4 max-w-lg mx-auto w-full">
         <div className="flex justify-center">
@@ -835,7 +928,7 @@ export default function OperarioMaquinaria() {
             <span>{activeEntrada ? 'Entrada ya registrada' : 'Marcar Entrada'}</span>
           </AttendanceButton>
 
-          {/* 2) REVISION INICIO */}
+          {/* 2) REVISION MAQUINARIA INICIO */}
           <Button
             className="w-full"
             onClick={() => void goRevision('inicio')}
@@ -843,11 +936,26 @@ export default function OperarioMaquinaria() {
           >
             <ClipboardCheck className="h-4 w-4 mr-2" />
             {rev.inicioComplete
-              ? `Revision Maquinaria inicio turno completa ✅ (${rev.required}/${rev.required})`
-              : `Revision Maquinaria inicio turno (${Math.min(rev.inicioCount, rev.required)}/${rev.required})`}
+              ? `Revisión Maquinaria inicio turno completa ✅ (${rev.required}/${rev.required})`
+              : `Revisión Maquinaria inicio turno (${Math.min(rev.inicioCount, rev.required)}/${rev.required})`}
           </Button>
 
-          {/* 3) EVIDENCIA 1 */}
+          {/* 3) REVISION IMPLEMENTO INICIO */}
+          <Button
+            className="w-full"
+            variant="outline"
+            onClick={() => goImplementoRevision('inicio')}
+            disabled={isSubmitting || !activeEntrada || !rev.inicioComplete || implementoInicioComplete}
+          >
+            <Wrench className="h-4 w-4 mr-2" />
+            {implementoInicioComplete
+              ? `Revisión Implemento inicio turno completa ✅ (${REQUIRED_IMPLEMENTO_PHOTOS}/${REQUIRED_IMPLEMENTO_PHOTOS})`
+              : !rev.inicioComplete
+                ? 'Revisión Implemento inicio (requiere revisión maquinaria INICIO)'
+                : `Revisión Implemento inicio turno (0/${REQUIRED_IMPLEMENTO_PHOTOS})`}
+          </Button>
+
+          {/* 4) EVIDENCIA 1 */}
           <Button
             className="w-full"
             onClick={() => void handleFollowUp(1)}
@@ -856,14 +964,14 @@ export default function OperarioMaquinaria() {
             <Camera className="h-4 w-4 mr-2" />
             {hasFollow1
               ? 'Evidencia 1 completada ✅'
-              : rev.inicioComplete
+              : rev.inicioComplete && implementoInicioComplete
                 ? follow1EnabledInfo.enabled
                   ? 'Registrar evidencia 1'
                   : `Registrar evidencia 1 en ${follow1EnabledInfo.remainingText}`
-                : 'Evidencia 1 (requiere revisión INICIO)'}
+                : 'Evidencia 1 (requiere revisiones INICIO)'}
           </Button>
 
-          {/* 4) EVIDENCIA 2 */}
+          {/* 5) EVIDENCIA 2 */}
           <Button
             className="w-full"
             variant="outline"
@@ -874,7 +982,20 @@ export default function OperarioMaquinaria() {
             {hasFollow2 ? 'Evidencia 2 completada ✅' : 'Registrar evidencia 2'}
           </Button>
 
-          {/* 5) REVISION FIN */}
+          {/* 6) REVISION IMPLEMENTO FIN */}
+          <Button
+            className="w-full"
+            variant="outline"
+            onClick={() => goImplementoRevision('fin')}
+            disabled={isSubmitting || !activeEntrada || implementoFinComplete || !implementoFinEnabled}
+          >
+            <Wrench className="h-4 w-4 mr-2" />
+            {implementoFinComplete
+              ? `Revisión Implemento fin turno completa ✅ (${REQUIRED_IMPLEMENTO_PHOTOS}/${REQUIRED_IMPLEMENTO_PHOTOS})`
+              : `Revisión Implemento fin turno (0/${REQUIRED_IMPLEMENTO_PHOTOS})`}
+          </Button>
+
+          {/* 7) REVISION MAQUINARIA FIN */}
           <Button
             className="w-full"
             variant="outline"
@@ -883,34 +1004,47 @@ export default function OperarioMaquinaria() {
           >
             <ClipboardCheck className="h-4 w-4 mr-2" />
             {rev.finComplete
-              ? `Revision Maquinaria fin turno completa ✅ (${rev.required}/${rev.required})`
-              : `Revision Maquinaria fin turno (${Math.min(rev.finCount, rev.required)}/${rev.required})`}
+              ? `Revisión Maquinaria fin turno completa ✅ (${rev.required}/${rev.required})`
+              : `Revisión Maquinaria fin turno (${Math.min(rev.finCount, rev.required)}/${rev.required})`}
           </Button>
 
-          {/* 6) SALIDA */}
-          <AttendanceButton type="salida" onClick={() => handleMarkAttendance('salida')} disabled={isSubmitting || !canExit}>
+          {/* 8) SALIDA */}
+          <AttendanceButton
+            type="salida"
+            onClick={() => handleMarkAttendance('salida')}
+            disabled={isSubmitting || !canExit}
+          >
             <LogOut className="h-7 w-7" />
             <span>{canExit ? 'Marcar Salida' : 'Marcar Salida (completa todo el flujo)'}</span>
           </AttendanceButton>
 
           <div className="text-xs text-muted-foreground space-y-1">
             <p>
-              Revisión INICIO: {rev.inicioComplete ? '✅' : '❌'} {rev.loading ? ' • Actualizando…' : ''}
+              Revisión Maquinaria INICIO: {rev.inicioComplete ? '✅' : '❌'}{rev.loading ? ' • Actualizando…' : ''}
+            </p>
+            <p>
+              Revisión Implemento INICIO: {implementoInicioComplete ? '✅' : '❌'}{implementoLoading ? ' • Actualizando…' : ''}
             </p>
             <p>
               Evidencias: {hasFollow1 ? '✅ 1' : '❌ 1'} / {hasFollow2 ? '✅ 2' : '❌ 2'}
               {isLoadingFollowups ? ' • Cargando…' : ''}
             </p>
-            <p>Revisión FIN: {rev.finComplete ? '✅' : '❌'}</p>
+            <p>Revisión Implemento FIN: {implementoFinComplete ? '✅' : '❌'}</p>
+            <p>Revisión Maquinaria FIN: {rev.finComplete ? '✅' : '❌'}</p>
           </div>
         </div>
 
         {todayRecords.length > 0 && (
           <div className="pt-4">
-            <h3 className="text-sm font-medium text-muted-foreground mb-2">Registros de hoy ({todayRecords.length})</h3>
+            <h3 className="text-sm font-medium text-muted-foreground mb-2">
+              Registros de hoy ({todayRecords.length})
+            </h3>
             <div className="space-y-2">
               {todayRecords.slice(0, 6).map((record) => (
-                <div key={record.id} className="flex items-center justify-between p-3 rounded-lg bg-muted/50">
+                <div
+                  key={record.id}
+                  className="flex items-center justify-between p-3 rounded-lg bg-muted/50"
+                >
                   <span
                     className={`text-sm font-medium ${
                       record.tipo_registro === 'entrada' ? 'text-success' : 'text-destructive'
@@ -918,7 +1052,9 @@ export default function OperarioMaquinaria() {
                   >
                     {record.tipo_registro === 'entrada' ? '🟢' : '🔴'} {record.tipo_registro.toUpperCase()}
                   </span>
-                  <span className="text-sm text-muted-foreground">{format(new Date(record.timestamp), 'HH:mm')}</span>
+                  <span className="text-sm text-muted-foreground">
+                    {format(new Date(record.timestamp), 'HH:mm')}
+                  </span>
                 </div>
               ))}
             </div>
@@ -948,7 +1084,9 @@ export default function OperarioMaquinaria() {
                 <p className="text-base font-semibold">{geoInfo.hac_ste}</p>
               </div>
               {geoCoords?.accuracy != null && (
-                <p className="text-xs text-muted-foreground">Precisión GPS: ±{Math.round(geoCoords.accuracy)} m</p>
+                <p className="text-xs text-muted-foreground">
+                  Precisión GPS: ±{Math.round(geoCoords.accuracy)} m
+                </p>
               )}
             </div>
           ) : (

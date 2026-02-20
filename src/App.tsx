@@ -10,14 +10,14 @@ import Auth from "./pages/Auth";
 import OperarioHome from "./pages/OperarioHome";
 import OperarioMaquinaria from "./pages/OperarioMaquinaria";
 import SupervisorDashboard from "./pages/SupervisorDashboard";
-import SupervisorTracking from "./pages/SupervisorTracking"; 
+import SupervisorTracking from "./pages/SupervisorTracking";
 import NotFound from "./pages/NotFound";
 import OperarioMaquinariaInicio from "./pages/OperarioMaquinariaInicio";
 import OperarioMaquinariaFin from "./pages/OperarioMaquinariaFin";
+import OperarioMaquinariaImplementoInicio from "./pages/OperarioMaquinariaImplementoInicio";
+import OperarioMaquinariaImplementoFin from "./pages/OperarioMaquinariaImplementoFin";
 import OperarioCuadrilla from "./pages/OperarioCuadrilla";
 import SupervisorCuadrilla from "./pages/SupervisorCuadrilla";
-
-
 
 const queryClient = new QueryClient();
 
@@ -69,6 +69,26 @@ function AppContent() {
             </ProtectedRoute>
           }
         />
+
+        {/* ✅ RUTAS IMPLEMENTO */}
+        <Route
+          path="/OperarioMaquinariaImplemento/inicio"
+          element={
+            <ProtectedRoute>
+              <OperarioMaquinariaImplementoInicio />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/OperarioMaquinariaImplemento/fin"
+          element={
+            <ProtectedRoute>
+              <OperarioMaquinariaImplementoFin />
+            </ProtectedRoute>
+          }
+        />
+
         <Route
           path="/OperarioCuadrilla"
           element={
@@ -89,7 +109,6 @@ function AppContent() {
           }
         />
 
-
         <Route
           path="/supervisor"
           element={
@@ -101,7 +120,6 @@ function AppContent() {
           }
         />
 
-        {/* ✅ NUEVA RUTA MAPA TRACKING */}
         <Route
           path="/supervisor/tracking"
           element={
