@@ -4,13 +4,21 @@ import { useAuth } from './useAuth';
 import { useGeolocation } from './useGeolocation';
 import { useOnlineStatus } from './useOnlineStatus';
 
-// ✅ IMPORTS LIMPIOS (sin duplicados)
+// ✅ Offline DB
 import {
   savePendingRecord,
   type PendingRecord,
   getPendingRecordsByUserAndDate,
   getDB, // ✅ autocuración al iniciar
 } from '@/lib/offline-db';
+
+// ✅ FECHA LOCAL (NO UTC)
+function toIsoDateLocal(d = new Date()) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
 
 interface AttendanceRecord {
   id: string;
@@ -27,9 +35,18 @@ interface AttendanceRecord {
   es_inconsistente: boolean;
   nota_inconsistencia: string | null;
 
-  // ✅ para supervisor/CSV
+  // ✅ columnas que YA EXISTEN en tu tabla (NO requiere cambios DB)
   hac_ste?: string | null;
   suerte_nom?: string | null;
+
+  horario_inicio?: string | null;
+  horario_fin?: string | null;
+  llegada_estado?: 'temprano_o_a_tiempo' | 'tarde' | null;
+  minutos_vs_inicio?: number | null;
+  salida_estado?: 'a_tiempo' | 'se_fue_antes_30' | 'se_fue_antes_mas_30' | null;
+  minutos_antes_fin?: number | null;
+  motivo_salida_temprano?: string | null;
+  permiso_foto_url?: string | null;
 }
 
 interface AttendanceState {
@@ -49,6 +66,20 @@ type MarkAttendanceResult = {
   error?: string | null;
 };
 
+type AttendanceMeta = {
+  client_timestamp?: string; // ISO string
+  horario_inicio?: string;
+  horario_fin?: string;
+  llegada_estado?: 'temprano_o_a_tiempo' | 'tarde';
+  minutos_vs_inicio?: number;
+
+  salida_estado?: 'a_tiempo' | 'se_fue_antes_30' | 'se_fue_antes_mas_30';
+  minutos_antes_fin?: number;
+
+  motivo_salida_temprano?: string;
+  permiso_firmado_blob?: Blob; // si lo envías, se guarda en permiso_foto_url
+};
+
 type PendingFollowUp = {
   id: string;
   entrada_id: string;
@@ -61,8 +92,7 @@ type PendingFollowUp = {
 const PENDING_FOLLOWUPS_KEY = 'pending_followups_v2';
 
 /**
- * ✅ Cache local de registros "remotos" (para sobrevivir online->offline y refresh)
- * Se guarda SOLO metadata (no blobs).
+ * ✅ Cache local de registros (metadata)
  */
 const TODAY_CACHE_PREFIX = 'today_records_cache_v1';
 function cacheKey(userId: string, isoDate: string) {
@@ -82,12 +112,8 @@ function writeTodayCache(userId: string, isoDate: string, records: AttendanceRec
   try {
     localStorage.setItem(cacheKey(userId, isoDate), JSON.stringify(records));
   } catch {
-    // no rompe la app si el storage está lleno/bloqueado
+    // ignore
   }
-}
-
-function toIsoDate(d = new Date()) {
-  return d.toISOString().split('T')[0];
 }
 
 function safeUUID() {
@@ -122,7 +148,9 @@ function readPendingFollowups(): PendingFollowUp[] {
 }
 
 function writePendingFollowups(items: PendingFollowUp[]) {
-  localStorage.setItem(PENDING_FOLLOWUPS_KEY, JSON.stringify(items));
+  try {
+    localStorage.setItem(PENDING_FOLLOWUPS_KEY, JSON.stringify(items));
+  } catch {}
 }
 
 function base64ToBlob(b64: string): Blob {
@@ -134,8 +162,7 @@ function base64ToBlob(b64: string): Blob {
 }
 
 /**
- * ✅ SOLUCIÓN CLAVE: "Sesión abierta" persistente
- * Si marcaste ENTRADA y luego pierdes internet/refresh, NO debe pedir entrada de nuevo.
+ * ✅ "Sesión abierta" persistente
  */
 const OPEN_SESSION_PREFIX = 'open_session_v1';
 type OpenSession = { entrada_id: string; timestamp: string };
@@ -174,25 +201,47 @@ export function useAttendance() {
     todayRecords: [],
   });
 
-  /**
-   * ✅ AUTOCURACIÓN de IndexedDB al iniciar.
-   * Evita "The specified index was not found" en Android/Chrome con DB vieja.
-   */
+  // ✅ AUTOCURACIÓN IndexedDB
   useEffect(() => {
     getDB().catch((e) => console.error('getDB init failed', e));
   }, []);
 
   /**
-   * ✅ Trae registros de HOY combinando:
-   * - Pending offline (IndexedDB)
-   * - Remote (Supabase si online)
-   * - Cache local (localStorage si offline)
-   * - ✅ Fallback ultra-robusto: open_session_v1
+   * ✅ Upload foto a bucket attendance-photos
+   */
+  const uploadPhoto = useCallback(async (path: string, blob: Blob): Promise<string> => {
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from('attendance-photos')
+      .upload(path, blob, { contentType: 'image/jpeg', upsert: true });
+
+    if (uploadError) {
+      console.error('Error uploading photo:', uploadError);
+      throw new Error(`No se pudo subir la foto (Storage): ${uploadError.message}`);
+    }
+
+    const { data: urlData } = supabase.storage.from('attendance-photos').getPublicUrl(uploadData.path);
+    if (!urlData?.publicUrl) throw new Error('No se pudo obtener URL pública de la foto');
+
+    return urlData.publicUrl;
+  }, []);
+
+  /**
+   * ✅ RPC para suertes
+   */
+  const resolveGeo = useCallback(async (lat: number, lon: number): Promise<GeoResult> => {
+    const { data, error } = await supabase.rpc('get_hacienda_by_point', { lat, lon });
+    if (error || !data || data.length === 0) return null;
+    return { nom: data[0].nom, hac_ste: data[0].hac_ste };
+  }, []);
+
+  /**
+   * ✅ Traer registros HOY (local date) mezclando:
+   * pending offline + remote (si online) + cache (si offline) + fallback open_session
    */
   const getTodayRecords = useCallback(async (): Promise<AttendanceRecord[]> => {
     if (!user) return [];
 
-    const today = toIsoDate();
+    const today = toIsoDateLocal();
 
     // 1) Pending offline (IndexedDB)
     let pendingTodayRaw: PendingRecord[] = [];
@@ -223,8 +272,19 @@ export function useAttendance() {
       estado_sync: 'pendiente',
       es_inconsistente: r.es_inconsistente ?? false,
       nota_inconsistencia: r.nota_inconsistencia ?? null,
+
+      // extras si tu offline-db los guarda
       hac_ste: (r as any).hac_ste ?? null,
       suerte_nom: (r as any).suerte_nom ?? null,
+
+      horario_inicio: (r as any).horario_inicio ?? null,
+      horario_fin: (r as any).horario_fin ?? null,
+      llegada_estado: (r as any).llegada_estado ?? null,
+      minutos_vs_inicio: (r as any).minutos_vs_inicio ?? null,
+      salida_estado: (r as any).salida_estado ?? null,
+      minutos_antes_fin: (r as any).minutos_antes_fin ?? null,
+      motivo_salida_temprano: (r as any).motivo_salida_temprano ?? null,
+      permiso_foto_url: (r as any).permiso_foto_url ?? null,
     }));
 
     // 2) Remote si online; cache si offline
@@ -258,7 +318,7 @@ export function useAttendance() {
       (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
     );
 
-    // ✅ Fallback ULTRA-ROBUSTO: si offline y no hay nada, usa open_session_v1
+    // 4) Fallback: offline + vacío -> open_session
     if (!isOnline && merged.length === 0) {
       const open = readOpenSession(user.id);
       if (open) {
@@ -283,7 +343,7 @@ export function useAttendance() {
       }
     }
 
-    // ✅ Siempre guarda cache local del estado final (sirve para refresh offline)
+    // ✅ guardar cache local siempre
     writeTodayCache(user.id, today, merged);
 
     setState((prev) => ({
@@ -295,6 +355,9 @@ export function useAttendance() {
     return merged;
   }, [user, isOnline]);
 
+  /**
+   * ✅ Reglas básicas de consistencia
+   */
   const checkForInconsistency = useCallback(
     async (
       tipo: 'entrada' | 'salida',
@@ -315,6 +378,9 @@ export function useAttendance() {
     []
   );
 
+  /**
+   * ✅ Horas trabajadas (desde estado)
+   */
   const calculateHoursWorked = useCallback(
     (options?: { includeOpenSession?: boolean }): number | null => {
       const includeOpenSession = options?.includeOpenSession ?? false;
@@ -352,30 +418,16 @@ export function useAttendance() {
     [state.todayRecords]
   );
 
-  const uploadPhoto = useCallback(async (path: string, blob: Blob): Promise<string> => {
-    const { data: uploadData, error: uploadError } = await supabase.storage
-      .from('attendance-photos')
-      .upload(path, blob, { contentType: 'image/jpeg', upsert: true });
-
-    if (uploadError) {
-      console.error('Error uploading photo:', uploadError);
-      throw new Error(`No se pudo subir la foto (Storage): ${uploadError.message}`);
-    }
-
-    const { data: urlData } = supabase.storage.from('attendance-photos').getPublicUrl(uploadData.path);
-    if (!urlData?.publicUrl) throw new Error('No se pudo obtener URL pública de la foto');
-
-    return urlData.publicUrl;
-  }, []);
-
-  const resolveGeo = useCallback(async (lat: number, lon: number): Promise<GeoResult> => {
-    const { data, error } = await supabase.rpc('get_hacienda_by_point', { lat, lon });
-    if (error || !data || data.length === 0) return null;
-    return { nom: data[0].nom, hac_ste: data[0].hac_ste };
-  }, []);
-
+  /**
+   * ✅ FIX PRINCIPAL:
+   * markAttendance ahora recibe meta y lo guarda en DB (columnas ya existentes).
+   */
   const markAttendance = useCallback(
-    async (tipo: 'entrada' | 'salida', photoBlob: Blob): Promise<MarkAttendanceResult> => {
+    async (
+      tipo: 'entrada' | 'salida',
+      photoBlob: Blob,
+      meta: AttendanceMeta = {}
+    ): Promise<MarkAttendanceResult> => {
       if (!user) {
         const msg = 'Usuario no autenticado';
         setState((prev) => ({ ...prev, error: msg }));
@@ -385,20 +437,23 @@ export function useAttendance() {
       setState((prev) => ({ ...prev, isSubmitting: true, error: null }));
 
       try {
+        // ✅ usar timestamp del cliente si viene (para evitar desfases)
+        const nowISO = meta.client_timestamp ?? new Date().toISOString();
+        const now = new Date(nowISO);
+
         // GPS best-effort
         let location: { latitude: number; longitude: number; accuracy: number } | null = null;
         try {
           location = await getCurrentPosition();
         } catch {}
 
-        // refresca registros para validación
+        // refresca registros para validar consistencia
         const records = await getTodayRecords();
         const { isInconsistent, note } = await checkForInconsistency(tipo, records);
 
-        const now = new Date();
         const recordId = safeUUID();
 
-        // Geo solo online
+        // Geo (solo online)
         let geo: GeoResult = null;
         const hasCoords = location?.latitude != null && location?.longitude != null;
         if (isOnline && hasCoords) {
@@ -407,12 +462,13 @@ export function useAttendance() {
 
         const fueraZona = hasCoords ? !geo : false;
 
+        // Construye PendingRecord (offline)
         const record: PendingRecord = {
           id: recordId,
           user_id: user.id,
-          fecha: toIsoDate(now),
+          fecha: toIsoDateLocal(now), // ✅ LOCAL
           tipo_registro: tipo,
-          timestamp: now.toISOString(),
+          timestamp: nowISO,
           latitud: location?.latitude ?? null,
           longitud: location?.longitude ?? null,
           precision_gps: location?.accuracy ?? null,
@@ -421,22 +477,40 @@ export function useAttendance() {
           foto_url: null,
           es_inconsistente: isInconsistent,
           nota_inconsistencia: note,
-          created_at: now.toISOString(),
+          created_at: nowISO,
           ...({
             hac_ste: geo?.hac_ste ?? null,
             suerte_nom: geo?.nom ?? null,
+
+            // ✅ guardar meta (columnas ya existen)
+            horario_inicio: meta.horario_inicio ?? null,
+            horario_fin: meta.horario_fin ?? null,
+            llegada_estado: meta.llegada_estado ?? null,
+            minutos_vs_inicio: meta.minutos_vs_inicio ?? null,
+            salida_estado: meta.salida_estado ?? null,
+            minutos_antes_fin: meta.minutos_antes_fin ?? null,
+            motivo_salida_temprano: meta.motivo_salida_temprano ?? null,
           } as any),
         };
 
-        // ✅ IMPORTANTÍSIMO: persistir sesión abierta/cerrada
+        // ✅ persistir sesión abierta
         if (tipo === 'entrada') {
           writeOpenSession(user.id, { entrada_id: record.id, timestamp: record.timestamp });
         }
 
         if (isOnline) {
+          // 1) subir foto principal
           const mainPath = `${user.id}/${recordId}.jpg`;
           const fotoUrl = await uploadPhoto(mainPath, photoBlob);
 
+          // 2) si hay permiso firmado (salida temprana), subirlo
+          let permisoUrl: string | null = null;
+          if (tipo === 'salida' && meta.permiso_firmado_blob) {
+            const permisoPath = `${user.id}/${recordId}_permiso.jpg`;
+            permisoUrl = await uploadPhoto(permisoPath, meta.permiso_firmado_blob);
+          }
+
+          // 3) insertar en DB (SIN CAMBIAR DB)
           const payload: any = {
             id: record.id,
             user_id: record.user_id,
@@ -453,31 +527,29 @@ export function useAttendance() {
             nota_inconsistencia: record.nota_inconsistencia,
             hac_ste: geo?.hac_ste ?? null,
             suerte_nom: geo?.nom ?? null,
+
+            // ✅ meta
+            horario_inicio: meta.horario_inicio ?? null,
+            horario_fin: meta.horario_fin ?? null,
+            llegada_estado: meta.llegada_estado ?? null,
+            minutos_vs_inicio: meta.minutos_vs_inicio ?? null,
+            salida_estado: meta.salida_estado ?? null,
+            minutos_antes_fin: meta.minutos_antes_fin ?? null,
+            motivo_salida_temprano: meta.motivo_salida_temprano ?? null,
+            permiso_foto_url: permisoUrl,
           };
 
           const { error: insertError } = await supabase.from('registros_asistencia').insert(payload);
           if (insertError) throw new Error(`DB insert failed: ${insertError.message}`);
 
-          // ✅ Actualizar cache local ya mismo
+          // ✅ actualizar cache local inmediatamente
           const today = record.fecha;
           const prevCache = readTodayCache(user.id, today);
 
           const newLocal: AttendanceRecord = {
-            id: record.id,
-            user_id: record.user_id,
-            fecha: record.fecha,
-            tipo_registro: record.tipo_registro,
-            timestamp: record.timestamp,
-            latitud: record.latitud,
-            longitud: record.longitud,
-            precision_gps: record.precision_gps,
-            fuera_zona: record.fuera_zona,
+            ...(payload as AttendanceRecord),
             foto_url: fotoUrl,
             estado_sync: 'sincronizado',
-            es_inconsistente: record.es_inconsistente,
-            nota_inconsistencia: record.nota_inconsistencia,
-            hac_ste: geo?.hac_ste ?? null,
-            suerte_nom: geo?.nom ?? null,
           };
 
           const mergedCache = [newLocal, ...prevCache.filter((x) => x.id !== newLocal.id)].sort(
@@ -486,10 +558,11 @@ export function useAttendance() {
 
           writeTodayCache(user.id, today, mergedCache);
         } else {
+          // offline
           await savePendingRecord(record);
         }
 
-        // ✅ si es salida: cerrar sesión (esto evita que se quede “abierta”)
+        // ✅ si es salida, cerrar sesión abierta
         if (tipo === 'salida') {
           clearOpenSession(user.id);
         }
@@ -531,6 +604,9 @@ export function useAttendance() {
     ]
   );
 
+  /**
+   * ✅ Evidencias seguimiento
+   */
   const markFollowUp = useCallback(
     async (evidenciaN: 1 | 2, photoBlob: Blob, entradaId: string): Promise<{ success: boolean }> => {
       if (!user) {
@@ -593,6 +669,9 @@ export function useAttendance() {
     [user, isOnline, uploadPhoto]
   );
 
+  /**
+   * ✅ Sync evidencias pendientes
+   */
   const syncPendingFollowups = useCallback(async (): Promise<{ synced: number; failed: number }> => {
     if (!user || !isOnline) return { synced: 0, failed: 0 };
 
@@ -643,14 +722,14 @@ export function useAttendance() {
     return { synced, failed };
   }, [user, isOnline, uploadPhoto]);
 
-  // refresca registros al cambiar online/offline
+  // refrescar al cambiar online/offline
   useEffect(() => {
-    if (user) getTodayRecords();
+    if (user) void getTodayRecords();
   }, [user, isOnline, getTodayRecords]);
 
   return {
     ...state,
-    markAttendance,
+    markAttendance,       // ✅ ahora acepta (tipo, blob, meta)
     markFollowUp,
     getTodayRecords,
     calculateHoursWorked,

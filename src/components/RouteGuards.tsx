@@ -1,3 +1,4 @@
+// src/components/RouteGuards.tsx
 import React from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
@@ -16,6 +17,7 @@ function LoadingSpinner() {
  * - operario_maquinaria: "/OperarioMaquinaria"
  * - operario_cuadrilla: "/OperarioCuadrilla"
  * - supervisor: "/supervisor"
+ * - supervisor_maquinaria: "/supervisor/maquinaria"
  * - supervisor_cuadrilla: "/supervisor/cuadrilla"
  */
 function getHomeByRole(role: string | null) {
@@ -26,6 +28,8 @@ function getHomeByRole(role: string | null) {
       return "/OperarioCuadrilla";
     case "supervisor":
       return "/supervisor";
+    case "supervisor_maquinaria":
+      return "/supervisor/maquinaria";
     case "supervisor_cuadrilla":
       return "/supervisor/cuadrilla";
     case "operario":
@@ -55,8 +59,12 @@ export function SupervisorRoute({ children }: { children: React.ReactNode }) {
 
   if (isLoading) return <LoadingSpinner />;
 
-  // ✅ Permite supervisor y supervisor_cuadrilla
-  const isAllowed = role === "supervisor" || role === "supervisor_cuadrilla";
+  // ✅ Permite supervisor y variantes (incluye supervisor_maquinaria)
+  const isAllowed =
+    role === "supervisor" ||
+    role === "supervisor_maquinaria" ||
+    role === "supervisor_cuadrilla";
+
   if (!isAllowed) return <Navigate to="/" replace />;
 
   return <>{children}</>;
@@ -68,10 +76,9 @@ export function PublicRoute({ children }: { children: React.ReactNode }) {
   if (isLoading) return <LoadingSpinner />;
 
   if (user) {
-    const home = getHomeByRole(role);
+    const home = getHomeByRole(role ?? null);
     return <Navigate to={home} replace />;
   }
 
   return <>{children}</>;
 }
-

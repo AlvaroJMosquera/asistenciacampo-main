@@ -253,6 +253,9 @@ export default function OperarioCuadrilla() {
     return { enabled: false, remainingText: `${mins}m ${secs}s` };
   }, [activeEntrada, tick]);
 
+  // ✅ Salida habilitada solo cuando ambas evidencias están completas
+  const canExit = hasFollow1 && hasFollow2;
+
   const showError = useCallback((tipo: 'entrada' | 'salida', message: string) => {
     setAttendanceResult({ isOpen: true, tipo, success: false, errorMsg: message });
   }, []);
@@ -292,11 +295,17 @@ export default function OperarioCuadrilla() {
 
   const handleMarkAttendance = async (tipo: 'entrada' | 'salida') => {
     try {
-      if (tipo === 'salida' && !hasFollow1) {
-        showError('salida', 'Debes completar el inicio de labor antes de marcar la salida.');
-        return;
-      }
       if (tipo === 'salida') {
+        // ✅ Ambas evidencias obligatorias
+        if (!hasFollow1) {
+          showError('salida', 'Debes registrar el inicio de labor (Evidencia 1) antes de marcar la salida.');
+          return;
+        }
+        if (!hasFollow2) {
+          showError('salida', 'Debes registrar el fin de labor (Evidencia 2) antes de marcar la salida.');
+          return;
+        }
+
         const now = new Date();
         const ex = evaluateExit(now);
         if (ex.status === 'se_fue_antes_mas_30') {
@@ -399,11 +408,8 @@ export default function OperarioCuadrilla() {
   return (
     <div className="min-h-screen flex flex-col bg-background">
 
-      {/* ✅ HEADER RESPONSIVE */}
       <header className="sticky top-0 z-10 bg-card border-b px-4 py-3 shadow-sm">
         <div className="max-w-lg mx-auto w-full flex items-center justify-between gap-2">
-
-          {/* Logo + nombre */}
           <div className="flex items-center gap-2 min-w-0">
             <img
               src="/logo_ipsa.JPG.jpeg"
@@ -419,8 +425,6 @@ export default function OperarioCuadrilla() {
               </p>
             </div>
           </div>
-
-          {/* Acciones */}
           <div className="flex items-center gap-1 shrink-0">
             {isSupervisor && (
               <Link to="/supervisor/cuadrilla">
@@ -442,10 +446,9 @@ export default function OperarioCuadrilla() {
           <SyncStatusBadge />
         </div>
 
-        {/* Horas trabajadas */}
         <HoursWorkedCard hours={hoursWorked} />
 
-        {/* ✅ TIMER LABOR */}
+        {/* Timer labor */}
         {follow1Timestamp && (
           <div className={`rounded-lg border p-3 sm:p-4 flex items-center gap-3 ${
             follow2Timestamp
@@ -470,7 +473,6 @@ export default function OperarioCuadrilla() {
           </div>
         )}
 
-        {/* Último registro */}
         <div>
           <h2 className="text-xs sm:text-sm font-medium text-muted-foreground mb-2">
             Último registro hoy
@@ -478,8 +480,9 @@ export default function OperarioCuadrilla() {
           <LastRecordCard record={lastRecord} />
         </div>
 
-        {/* ✅ BOTONES DE ACCIÓN */}
         <div className="space-y-2 sm:space-y-3 pt-1">
+
+          {/* 1) ENTRADA */}
           <AttendanceButton
             type="entrada"
             onClick={() => handleMarkAttendance('entrada')}
@@ -487,10 +490,11 @@ export default function OperarioCuadrilla() {
           >
             <LogIn className="h-6 w-6 sm:h-7 sm:w-7" />
             <span className="text-sm sm:text-base">
-              {activeEntrada ? 'Entrada ya registrada' : 'Marcar Entrada Cuadrilla'}
+              {activeEntrada ? 'Entrada ya registrada' : 'Marcar Entrada'}
             </span>
           </AttendanceButton>
 
+          {/* 2) EVIDENCIA 1 — inicio labor */}
           <Button
             className="w-full h-10 sm:h-11 text-sm"
             onClick={() => handleFollowUp(1)}
@@ -501,11 +505,12 @@ export default function OperarioCuadrilla() {
               {hasFollow1
                 ? 'Labor iniciada ✅'
                 : follow1EnabledInfo.enabled
-                  ? 'Iniciar labor'
-                  : `Iniciar labor en ${follow1EnabledInfo.remainingText}`}
+                  ? 'Oprime para iniciar labor'
+                  : `${follow1EnabledInfo.remainingText} para iniciar labor`}
             </span>
           </Button>
 
+          {/* 3) EVIDENCIA 2 — fin labor (OBLIGATORIA para salir) */}
           <Button
             className="w-full h-10 sm:h-11 text-sm"
             variant="outline"
@@ -513,21 +518,42 @@ export default function OperarioCuadrilla() {
             disabled={isSubmitting || hasFollow2 || !hasFollow1 || !activeEntrada}
           >
             <Camera className="h-4 w-4 mr-2 shrink-0" />
-            <span>{hasFollow2 ? 'Labor finalizada ✅' : 'Finalizar labor'}</span>
+            <span>
+              {hasFollow2
+                ? 'Labor finalizada ✅'
+                : hasFollow1
+                  ? 'Oprime para finalizar labor (obligatorio)'
+                  : 'Finalizar labor (requiere iniciar primero)'}
+            </span>
           </Button>
 
+          {/* ✅ Aviso visual cuando falta la Evidencia 2 y hay Evidencia 1 */}
+          {hasFollow1 && !hasFollow2 && (
+            <div className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2">
+              <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+              <p className="text-xs text-amber-700">
+                Debes finalizar la labor antes de marcar la salida.
+              </p>
+            </div>
+          )}
+
+          {/* 4) SALIDA — requiere Evidencia 1 Y Evidencia 2 */}
           <AttendanceButton
             type="salida"
             onClick={() => handleMarkAttendance('salida')}
-            disabled={isSubmitting || !hasFollow1}
+            disabled={isSubmitting || !canExit}
           >
             <LogOut className="h-6 w-6 sm:h-7 sm:w-7" />
             <span className="text-sm sm:text-base">
-              {hasFollow1 ? 'Marcar Salida' : 'Marcar Salida (inicia labor primero)'}
+              {canExit
+                ? 'Marcar Salida'
+                : !hasFollow1
+                  ? 'Marcar Salida (inicia labor primero)'
+                  : 'Marcar Salida (finaliza labor primero)'}
             </span>
           </AttendanceButton>
 
-          {/* ✅ HORARIO movido ABAJO de los botones */}
+          {/* Horario */}
           <div className="rounded-lg border bg-muted/30 px-3 py-2 flex items-center gap-2">
             <Clock3 className="h-4 w-4 text-muted-foreground shrink-0" />
             <div className="text-xs text-muted-foreground">
@@ -543,7 +569,6 @@ export default function OperarioCuadrilla() {
           </p>
         </div>
 
-        {/* Registros del día */}
         {todayRecords.length > 0 && (
           <div className="pt-1">
             <h3 className="text-xs sm:text-sm font-medium text-muted-foreground mb-2">
@@ -571,7 +596,7 @@ export default function OperarioCuadrilla() {
         )}
       </main>
 
-      {/* ✅ MODAL RESULTADO ENTRADA/SALIDA */}
+      {/* Modal resultado entrada/salida */}
       <Dialog
         open={attendanceResult.isOpen}
         onOpenChange={(o) => !o && setAttendanceResult((p) => ({ ...p, isOpen: false }))}
@@ -587,14 +612,12 @@ export default function OperarioCuadrilla() {
           </DialogHeader>
 
           <div className="space-y-3">
-            {/* Error */}
             {!attendanceResult.success && attendanceResult.errorMsg && (
               <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-sm text-destructive">
                 {attendanceResult.errorMsg}
               </div>
             )}
 
-            {/* Info ENTRADA */}
             {attendanceResult.success && attendanceResult.tipo === 'entrada' && attendanceResult.arrivalStatus && (
               <div className={`p-3 sm:p-4 rounded-lg border ${
                 attendanceResult.arrivalStatus === 'tarde'
@@ -605,9 +628,7 @@ export default function OperarioCuadrilla() {
                   <div className="flex items-start gap-2">
                     <AlertTriangle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
                     <div>
-                      <p className="font-semibold text-destructive text-sm sm:text-base">
-                        Llegaste tarde
-                      </p>
+                      <p className="font-semibold text-destructive text-sm sm:text-base">Llegaste tarde</p>
                       <p className="text-xs sm:text-sm text-muted-foreground mt-1">
                         {attendanceResult.diffMin !== undefined && attendanceResult.diffMin > 0
                           ? `${attendanceResult.diffMin} min después del límite (06:10)`
@@ -619,9 +640,7 @@ export default function OperarioCuadrilla() {
                   <div className="flex items-start gap-2">
                     <CheckCircle2 className="h-5 w-5 text-emerald-600 shrink-0 mt-0.5" />
                     <div>
-                      <p className="font-semibold text-emerald-700 text-sm sm:text-base">
-                        Llegaste a tiempo ✅
-                      </p>
+                      <p className="font-semibold text-emerald-700 text-sm sm:text-base">Llegaste a tiempo ✅</p>
                       {attendanceResult.diffMin !== undefined && attendanceResult.diffMin < 0 && (
                         <p className="text-xs sm:text-sm text-muted-foreground mt-1">
                           {Math.abs(attendanceResult.diffMin)} min antes del inicio
@@ -633,7 +652,6 @@ export default function OperarioCuadrilla() {
               </div>
             )}
 
-            {/* Info SALIDA */}
             {attendanceResult.success && attendanceResult.tipo === 'salida' && attendanceResult.exitStatus && (
               <div className={`p-3 sm:p-4 rounded-lg border ${
                 attendanceResult.exitStatus === 'a_tiempo'
@@ -644,12 +662,8 @@ export default function OperarioCuadrilla() {
                   <div className="flex items-start gap-2">
                     <CheckCircle2 className="h-5 w-5 text-emerald-600 shrink-0 mt-0.5" />
                     <div>
-                      <p className="font-semibold text-emerald-700 text-sm sm:text-base">
-                        Salida a tiempo ✅
-                      </p>
-                      <p className="text-xs sm:text-sm text-muted-foreground mt-1">
-                        Hora fin: {attendanceResult.endHHMM}
-                      </p>
+                      <p className="font-semibold text-emerald-700 text-sm sm:text-base">Salida a tiempo ✅</p>
+                      <p className="text-xs sm:text-sm text-muted-foreground mt-1">Hora fin: {attendanceResult.endHHMM}</p>
                     </div>
                   </div>
                 )}
@@ -657,9 +671,7 @@ export default function OperarioCuadrilla() {
                   <div className="flex items-start gap-2">
                     <AlertTriangle className="h-5 w-5 text-amber-500 shrink-0 mt-0.5" />
                     <div>
-                      <p className="font-semibold text-amber-700 text-sm sm:text-base">
-                        Salida anticipada
-                      </p>
+                      <p className="font-semibold text-amber-700 text-sm sm:text-base">Salida anticipada</p>
                       <p className="text-xs sm:text-sm text-muted-foreground mt-1">
                         {attendanceResult.diffMinToEnd} min antes del fin ({attendanceResult.endHHMM}). Dentro del margen.
                       </p>
@@ -670,9 +682,7 @@ export default function OperarioCuadrilla() {
                   <div className="flex items-start gap-2">
                     <AlertTriangle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
                     <div>
-                      <p className="font-semibold text-destructive text-sm sm:text-base">
-                        Salida temprana registrada
-                      </p>
+                      <p className="font-semibold text-destructive text-sm sm:text-base">Salida temprana registrada</p>
                       <p className="text-xs sm:text-sm text-muted-foreground mt-1">
                         {attendanceResult.diffMinToEnd} min antes. Se registró motivo y permiso.
                       </p>
@@ -682,7 +692,6 @@ export default function OperarioCuadrilla() {
               </div>
             )}
 
-            {/* Horas */}
             {attendanceResult.success && attendanceResult.hoursWorked != null && (
               <div className="p-3 rounded-lg bg-muted text-sm flex justify-between items-center">
                 <span className="text-muted-foreground text-xs sm:text-sm">Horas trabajadas hoy</span>
@@ -711,7 +720,7 @@ export default function OperarioCuadrilla() {
               Ubicación al iniciar turno
             </DialogTitle>
             <DialogDescription className="text-xs sm:text-sm">
-              Ubicación capturada al registrar la entrada.
+              Al iniciar el turno te encuentras en
             </DialogDescription>
           </DialogHeader>
           {geoInfo ? (
@@ -736,9 +745,7 @@ export default function OperarioCuadrilla() {
             </div>
           )}
           <DialogFooter>
-            <Button className="w-full sm:w-auto" onClick={() => setGeoOpen(false)}>
-              Aceptar
-            </Button>
+            <Button className="w-full sm:w-auto" onClick={() => setGeoOpen(false)}>Aceptar</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -749,7 +756,7 @@ export default function OperarioCuadrilla() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-base">
               <AlertTriangle className="h-5 w-5 text-destructive shrink-0" />
-              Salida temprana (&gt;30 min)
+              Salida temprana
             </DialogTitle>
             <DialogDescription className="text-xs sm:text-sm">
               Registra el motivo y toma foto del permiso firmado.

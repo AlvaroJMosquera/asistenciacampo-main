@@ -11,6 +11,7 @@ import OperarioHome from "./pages/OperarioHome";
 import OperarioMaquinaria from "./pages/OperarioMaquinaria";
 import SupervisorDashboard from "./pages/SupervisorDashboard";
 import SupervisorTracking from "./pages/SupervisorTracking";
+import SupervisorMaquinaria from "./pages/Supervisormaquinaria";
 import NotFound from "./pages/NotFound";
 import OperarioMaquinariaInicio from "./pages/OperarioMaquinariaInicio";
 import OperarioMaquinariaFin from "./pages/OperarioMaquinariaFin";
@@ -25,6 +26,8 @@ function AppContent() {
   return (
     <BrowserRouter>
       <Routes>
+
+        {/* ── Auth ── */}
         <Route
           path="/auth"
           element={
@@ -34,6 +37,7 @@ function AppContent() {
           }
         />
 
+        {/* ── Operario home ── */}
         <Route
           path="/"
           element={
@@ -43,6 +47,7 @@ function AppContent() {
           }
         />
 
+        {/* ── Operario maquinaria ── */}
         <Route
           path="/OperarioMaquinaria"
           element={
@@ -70,7 +75,7 @@ function AppContent() {
           }
         />
 
-        {/* ✅ RUTAS IMPLEMENTO */}
+        {/* ── Operario implemento ── */}
         <Route
           path="/OperarioMaquinariaImplemento/inicio"
           element={
@@ -89,6 +94,7 @@ function AppContent() {
           }
         />
 
+        {/* ── Operario cuadrilla ── */}
         <Route
           path="/OperarioCuadrilla"
           element={
@@ -98,6 +104,7 @@ function AppContent() {
           }
         />
 
+        {/* ── Supervisor cuadrilla ── */}
         <Route
           path="/supervisor/cuadrilla"
           element={
@@ -109,6 +116,19 @@ function AppContent() {
           }
         />
 
+        {/* ── Supervisor maquinaria ── */}
+        <Route
+          path="/supervisor/maquinaria"
+          element={
+            <ProtectedRoute>
+              <SupervisorRoute>
+                <SupervisorMaquinaria />
+              </SupervisorRoute>
+            </ProtectedRoute>
+          }
+        />
+
+        {/* ── Supervisor general ── */}
         <Route
           path="/supervisor"
           element={
