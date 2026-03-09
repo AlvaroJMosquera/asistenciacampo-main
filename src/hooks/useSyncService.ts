@@ -18,7 +18,7 @@ interface SyncState {
 
 export function useSyncService() {
   const { isOnline } = useOnlineStatus();
-  const { user } = useAuth();
+  const { user, userSlug } = useAuth();
 
   const [state, setState] = useState<SyncState>({
     pendingCount: 0,
@@ -35,7 +35,7 @@ export function useSyncService() {
   const uploadPhoto = async (record: PendingRecord): Promise<string | null> => {
     if (!record.foto_blob || !user) return record.foto_url ?? null;
 
-    const fileName = `${user.id}/${record.id}.jpg`;
+    const fileName = `${userSlug}/${record.id}.jpg`;
     const { data, error } = await supabase.storage
       .from('attendance-photos')
       .upload(fileName, record.foto_blob, {

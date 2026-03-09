@@ -285,7 +285,7 @@ export default function OperarioMaquinariaFin() {
   const [params] = useSearchParams();
   const entradaId = params.get("entrada_id");
 
-  const { user } = useAuth();
+  const { user, userSlug } = useAuth();
   const { capturePhoto } = useCamera();
   const { getCurrentPosition } = useGeolocation();
 
@@ -576,7 +576,7 @@ export default function OperarioMaquinariaFin() {
       if (!blob) return;
 
       const today = getLocalDateISO();
-      const filePath = `${user.id}/maquinaria/${today}/fin/${revisionId}/${tipo}.webp`;
+      const filePath = `${userSlug}/maquinaria/${today}/fin/${revisionId}/${tipo}.webp`;
 
       if (navigator.onLine) {
         const { error: uploadErr } = await supabase.storage

@@ -285,7 +285,7 @@ export default function OperarioMaquinariaInicio() {
   const [params] = useSearchParams();
   const entradaId = params.get("entrada_id");
 
-  const { user } = useAuth();
+  const { user, userSlug } = useAuth();
   const { capturePhoto } = useCamera();
   const { getCurrentPosition } = useGeolocation();
 
@@ -585,7 +585,7 @@ export default function OperarioMaquinariaInicio() {
       if (!blob) return;
 
       const today = getLocalDateISO();
-      const filePath = `${user.id}/maquinaria/${today}/inicio/${revisionId}/${tipo}.webp`;
+      const filePath = `${userSlug}/maquinaria/${today}/inicio/${revisionId}/${tipo}.webp`;
 
       if (navigator.onLine) {
         // ── Online: subir directo ──

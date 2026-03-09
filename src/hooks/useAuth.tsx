@@ -9,11 +9,21 @@ type AppRole =
   | 'supervisor'
   | 'supervisor_cuadrilla';
 
-
 interface Profile {
   id: string;
   nombre: string;
   activo: boolean;
+}
+
+function toSlug(nombre: string): string {
+  return nombre
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9 _-]/g, '')
+    .trim()
+    .replace(/\s+/g, '_')
+    .toLowerCase()
+    .slice(0, 50);
 }
 
 interface AuthContextType {
@@ -26,7 +36,10 @@ interface AuthContextType {
   isOperarioMaquinaria: boolean;
   isOperarioCuadrilla: boolean;
   isSupervisorCuadrilla: boolean;
-
+  /** Slug del nombre del usuario para usar en paths de Storage.
+   *  Ej: "Juan García" → "juan_garcia"
+   *  Fallback: user.id (si el perfil aún no cargó) */
+  userSlug: string;
 
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
   signUp: (email: string, password: string, nombre: string) => Promise<{ error: Error | null }>;
@@ -59,8 +72,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       setProfile(profileData);
 
-      // 👇 si tu tabla user_roles puede tener más de un rol,
-      // cámbialo a .maybeSingle() + lógica adicional.
       const { data: roleData, error: roleError } = await supabase
         .from('user_roles')
         .select('role')
@@ -160,6 +171,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setRole(null);
   };
 
+  // ✅ userSlug: nombre sanitizado si ya cargó el perfil, si no fallback a user.id
+  const userSlug = profile?.nombre
+    ? toSlug(profile.nombre) || user?.id || 'unknown'
+    : user?.id || 'unknown';
+
   const value: AuthContextType = {
     user,
     session,
@@ -170,6 +186,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     isOperarioMaquinaria: role === 'operario_maquinaria',
     isOperarioCuadrilla: role === 'operario_cuadrilla',
     isSupervisorCuadrilla: role === 'supervisor_cuadrilla',
+    userSlug,  // ✅ nuevo
 
     signIn,
     signUp,

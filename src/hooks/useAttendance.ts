@@ -190,7 +190,7 @@ function clearOpenSession(userId: string) {
 }
 
 export function useAttendance() {
-  const { user } = useAuth();
+  const { user, userSlug } = useAuth();
   const { getCurrentPosition } = useGeolocation();
   const { isOnline } = useOnlineStatus();
 
@@ -500,13 +500,13 @@ export function useAttendance() {
 
         if (isOnline) {
           // 1) subir foto principal
-          const mainPath = `${user.id}/${recordId}.jpg`;
+          const mainPath = `${userSlug}/${recordId}.jpg`;
           const fotoUrl = await uploadPhoto(mainPath, photoBlob);
 
           // 2) si hay permiso firmado (salida temprana), subirlo
           let permisoUrl: string | null = null;
           if (tipo === 'salida' && meta.permiso_firmado_blob) {
-            const permisoPath = `${user.id}/${recordId}_permiso.jpg`;
+            const permisoPath = `${userSlug}/${recordId}_permiso.jpg`;
             permisoUrl = await uploadPhoto(permisoPath, meta.permiso_firmado_blob);
           }
 
@@ -643,7 +643,7 @@ export function useAttendance() {
           return { success: true };
         }
 
-        const path = `${user.id}/${entradaId}_seg_${evidenciaN}.jpg`;
+        const path = `${userSlug}/${entradaId}_seg_${evidenciaN}.jpg`;
         const fotoUrl = await uploadPhoto(path, photoBlob);
 
         const { error: insertError } = await supabase.from('seguimiento_fotos').insert({
