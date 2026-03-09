@@ -689,7 +689,8 @@ export function useAttendance() {
       try {
         const blob = base64ToBlob(item.foto_base64);
 
-        const path = `${user.id}/${item.entrada_id}_seg_${item.evidencia_n}.jpg`;
+        const path = `${userSlug}/${item.entrada_id}_seg_${item.evidencia_n}.jpg`;
+
         const fotoUrl = await uploadPhoto(path, blob);
 
         const { error } = await supabase.from('seguimiento_fotos').insert({
