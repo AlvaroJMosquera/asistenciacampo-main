@@ -1015,7 +1015,7 @@ export default function OperarioMaquinaria() {
             disabled={isSubmitting || !canExit}
           >
             <LogOut className="h-7 w-7" />
-            <span>{canExit ? 'Marcar Salida' : 'Marcar Salida (completa todo el flujo)'}</span>
+            <span>{canExit ? 'Marcar Salida' : 'Marcar Salida (Completa todos los pasos)'}</span>
           </AttendanceButton>
 
           <div className="text-xs text-muted-foreground space-y-1">
