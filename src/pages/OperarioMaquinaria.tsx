@@ -56,7 +56,7 @@ const REQUIRED_MAQUINARIA_PHOTOS = 5;
 const REQUIRED_IMPLEMENTO_PHOTOS = 2;
 
 // ✅ Evidencia 1 habilitada tras X tiempo (cambia aquí)
-const FOLLOWUP_REQUIRED_MS = 60 * 1000;
+const FOLLOWUP_REQUIRED_MS = 3 * 60 * 1000; 
 
 // ---------- Local storage: evidencias ----------
 function followupStorageKey(userId: string, entradaId: string) {
