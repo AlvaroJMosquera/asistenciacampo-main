@@ -23,7 +23,8 @@ function getLocalDateISO() {
 // ─── UUID offline ─────────────────────────────────────────────────────────────
 function safeUUID(): string {
   try {
-    if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+    if (typeof crypto !== "undefined" && crypto.randomUUID)
+      return crypto.randomUUID();
   } catch {}
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
     const r = (Math.random() * 16) | 0;
@@ -49,14 +50,24 @@ function readGeoCache(userId: string, entradaId: string): GeoInfo | null {
   try {
     const raw = localStorage.getItem(geoCacheKey(userId, entradaId));
     return raw ? (JSON.parse(raw) as GeoInfo) : null;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 function writeGeoCache(userId: string, entradaId: string, geo: GeoInfo) {
-  try { localStorage.setItem(geoCacheKey(userId, entradaId), JSON.stringify(geo)); } catch {}
+  try {
+    localStorage.setItem(geoCacheKey(userId, entradaId), JSON.stringify(geo));
+  } catch {}
 }
 
-async function resolveGeoRPC(lat: number, lon: number): Promise<{ nom: string; hac_ste: string } | null> {
-  const { data, error } = await supabase.rpc("get_hacienda_by_point", { lat, lon });
+async function resolveGeoRPC(
+  lat: number,
+  lon: number,
+): Promise<{ nom: string; hac_ste: string } | null> {
+  const { data, error } = await supabase.rpc("get_hacienda_by_point", {
+    lat,
+    lon,
+  });
   if (error || !data || data.length === 0) return null;
   return { nom: data[0].nom, hac_ste: data[0].hac_ste };
 }
@@ -65,14 +76,28 @@ async function resolveGeoRPC(lat: number, lon: number): Promise<{ nom: string; h
 function fotosLocalKey(userId: string, entradaId: string) {
   return `implemento_fotos_local:${userId}:${entradaId}:fin`;
 }
-function readLocalSubidas(userId: string, entradaId: string): Record<string, boolean> {
+function readLocalSubidas(
+  userId: string,
+  entradaId: string,
+): Record<string, boolean> {
   try {
     const raw = localStorage.getItem(fotosLocalKey(userId, entradaId));
     return raw ? (JSON.parse(raw) as Record<string, boolean>) : {};
-  } catch { return {}; }
+  } catch {
+    return {};
+  }
 }
-function writeLocalSubidas(userId: string, entradaId: string, subidas: Record<string, boolean>) {
-  try { localStorage.setItem(fotosLocalKey(userId, entradaId), JSON.stringify(subidas)); } catch {}
+function writeLocalSubidas(
+  userId: string,
+  entradaId: string,
+  subidas: Record<string, boolean>,
+) {
+  try {
+    localStorage.setItem(
+      fotosLocalKey(userId, entradaId),
+      JSON.stringify(subidas),
+    );
+  } catch {}
 }
 
 // ─── Local: revisionId persistido ────────────────────────────────────────────
@@ -80,10 +105,16 @@ function revisionIdLocalKey(userId: string, entradaId: string) {
   return `implemento_revision_id:${userId}:${entradaId}:fin`;
 }
 function readLocalRevisionId(userId: string, entradaId: string): string | null {
-  try { return localStorage.getItem(revisionIdLocalKey(userId, entradaId)); } catch { return null; }
+  try {
+    return localStorage.getItem(revisionIdLocalKey(userId, entradaId));
+  } catch {
+    return null;
+  }
 }
 function writeLocalRevisionId(userId: string, entradaId: string, id: string) {
-  try { localStorage.setItem(revisionIdLocalKey(userId, entradaId), id); } catch {}
+  try {
+    localStorage.setItem(revisionIdLocalKey(userId, entradaId), id);
+  } catch {}
 }
 
 // ─── Local: fotos pendientes de sync ─────────────────────────────────────────
@@ -104,10 +135,14 @@ function readPendingPhotos(): PendingPhoto[] {
   try {
     const raw = localStorage.getItem(PENDING_PHOTOS_KEY);
     return raw ? (JSON.parse(raw) as PendingPhoto[]) : [];
-  } catch { return []; }
+  } catch {
+    return [];
+  }
 }
 function writePendingPhotos(items: PendingPhoto[]) {
-  try { localStorage.setItem(PENDING_PHOTOS_KEY, JSON.stringify(items)); } catch {}
+  try {
+    localStorage.setItem(PENDING_PHOTOS_KEY, JSON.stringify(items));
+  } catch {}
 }
 
 function blobToBase64(blob: Blob): Promise<string> {
@@ -141,20 +176,29 @@ type PendingRevision = {
 
 const PENDING_REVISION_KEY = "implemento_pending_revision_fin_v1";
 
-function readPendingRevision(userId: string, entradaId: string): PendingRevision | null {
+function readPendingRevision(
+  userId: string,
+  entradaId: string,
+): PendingRevision | null {
   try {
     const raw = localStorage.getItem(PENDING_REVISION_KEY);
     if (!raw) return null;
     const all = JSON.parse(raw) as PendingRevision[];
-    return all.find((x) => x.userId === userId && x.entradaId === entradaId) ?? null;
-  } catch { return null; }
+    return (
+      all.find((x) => x.userId === userId && x.entradaId === entradaId) ?? null
+    );
+  } catch {
+    return null;
+  }
 }
 function upsertPendingRevision(item: PendingRevision) {
   try {
     const raw = localStorage.getItem(PENDING_REVISION_KEY);
     const all: PendingRevision[] = raw ? JSON.parse(raw) : [];
     const next = [
-      ...all.filter((x) => !(x.userId === item.userId && x.entradaId === item.entradaId)),
+      ...all.filter(
+        (x) => !(x.userId === item.userId && x.entradaId === item.entradaId),
+      ),
       item,
     ];
     localStorage.setItem(PENDING_REVISION_KEY, JSON.stringify(next));
@@ -167,13 +211,19 @@ function removePendingRevision(userId: string, entradaId: string) {
     const all = JSON.parse(raw) as PendingRevision[];
     localStorage.setItem(
       PENDING_REVISION_KEY,
-      JSON.stringify(all.filter((x) => !(x.userId === userId && x.entradaId === entradaId)))
+      JSON.stringify(
+        all.filter((x) => !(x.userId === userId && x.entradaId === entradaId)),
+      ),
     );
   } catch {}
 }
 
 // ─── Sync cuando vuelve internet ──────────────────────────────────────────────
-async function syncPendingData(userId: string, entradaId: string, revisionId: string) {
+async function syncPendingData(
+  userId: string,
+  entradaId: string,
+  revisionId: string,
+) {
   if (!navigator.onLine) return;
 
   // 1) Sync revisión metadata
@@ -193,7 +243,7 @@ async function syncPendingData(userId: string, entradaId: string, revisionId: st
         hac_ste: pending.hac_ste,
         suerte_nom: pending.suerte_nom,
       },
-      { onConflict: "id" } as any
+      { onConflict: "id" } as any,
     );
     if (!error) removePendingRevision(userId, entradaId);
     else console.error("[sync implemento fin revision]", error.message);
@@ -201,9 +251,11 @@ async function syncPendingData(userId: string, entradaId: string, revisionId: st
 
   // 2) Sync fotos pendientes
   const allPhotos = readPendingPhotos();
-  const mine = allPhotos.filter((p) => p.revisionId === revisionId && p.userId === userId);
+  const mine = allPhotos.filter(
+    (p) => p.revisionId === revisionId && p.userId === userId,
+  );
   const keep: PendingPhoto[] = allPhotos.filter(
-    (p) => !(p.revisionId === revisionId && p.userId === userId)
+    (p) => !(p.revisionId === revisionId && p.userId === userId),
   );
 
   for (const photo of mine) {
@@ -212,19 +264,24 @@ async function syncPendingData(userId: string, entradaId: string, revisionId: st
 
       const { error: upErr } = await supabase.storage
         .from("attendance-photos")
-        .upload(photo.filePath, blob, { upsert: true, contentType: photo.contentType });
+        .upload(photo.filePath, blob, {
+          upsert: true,
+          contentType: photo.contentType,
+        });
       if (upErr) throw upErr;
 
-      const { error: upsErr } = await supabase.from("revision_implemento_fotos").upsert(
-        {
-          revision_id: photo.revisionId,
-          user_id: photo.userId,
-          foto_tipo: photo.tipo,
-          foto_path: photo.filePath,
-          foto_url: null,
-        },
-        { onConflict: "revision_id,foto_tipo" } as any
-      );
+      const { error: upsErr } = await supabase
+        .from("revision_implemento_fotos")
+        .upsert(
+          {
+            revision_id: photo.revisionId,
+            user_id: photo.userId,
+            foto_tipo: photo.tipo,
+            foto_path: photo.filePath,
+            foto_url: null,
+          },
+          { onConflict: "revision_id,foto_tipo" } as any,
+        );
       if (upsErr) throw upsErr;
     } catch (e) {
       console.error("[sync implemento fin photo]", e);
@@ -252,19 +309,21 @@ export default function OperarioMaquinariaImplementoFin() {
   const { getCurrentPosition } = useGeolocation();
 
   const [revisionId, setRevisionId] = useState<string | null>(null);
-  const [subidas, setSubidas] = useState<Record<FotoTipo, boolean>>({} as Record<FotoTipo, boolean>);
+  const [subidas, setSubidas] = useState<Record<FotoTipo, boolean>>(
+    {} as Record<FotoTipo, boolean>,
+  );
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [geoMsg, setGeoMsg] = useState<string | null>(null);
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
 
-  const completas = useMemo(() => FOTO_TIPOS.filter((f) => subidas[f.key]).length, [subidas]);
+  const completas = useMemo(
+    () => FOTO_TIPOS.filter((f) => subidas[f.key]).length,
+    [subidas],
+  );
 
   const puedeFinalizar =
-    completas === FOTO_TIPOS.length &&
-    !!revisionId &&
-    !loading &&
-    !creating;
+    completas === FOTO_TIPOS.length && !!revisionId && !loading && !creating;
 
   // ── Monitor online/offline ────────────────────────────────────────────────
   useEffect(() => {
@@ -290,17 +349,25 @@ export default function OperarioMaquinariaImplementoFin() {
     const local = readLocalSubidas(user.id, entradaId);
     const next: Record<FotoTipo, boolean> = {} as any;
     for (const f of FOTO_TIPOS) if (local[f.key]) next[f.key] = true;
-    if (Object.keys(next).length > 0) setSubidas((prev) => ({ ...prev, ...next }));
+    if (Object.keys(next).length > 0)
+      setSubidas((prev) => ({ ...prev, ...next }));
   }, [user?.id, entradaId]);
 
   // ── Helper: GPS + geo con cache ───────────────────────────────────────────
-  const getGeoPayload = async (userId: string, entradaId: string): Promise<GeoInfo> => {
+  const getGeoPayload = async (
+    userId: string,
+    entradaId: string,
+  ): Promise<GeoInfo> => {
     const cached = readGeoCache(userId, entradaId);
     if (cached) return cached;
 
     const empty: GeoInfo = {
-      lat: null, lon: null, accuracy: null,
-      hac_ste: null, suerte_nom: null, fuera_zona: false,
+      lat: null,
+      lon: null,
+      accuracy: null,
+      hac_ste: null,
+      suerte_nom: null,
+      fuera_zona: false,
       at: new Date().toISOString(),
     };
 
@@ -350,7 +417,9 @@ export default function OperarioMaquinariaImplementoFin() {
         if (navigator.onLine) {
           const { data: existing, error: selErr } = await supabase
             .from("revision_implemento")
-            .select("id, latitud, longitud, hac_ste, suerte_nom, precision_gps, fuera_zona, updated_at, created_at")
+            .select(
+              "id, latitud, longitud, hac_ste, suerte_nom, precision_gps, fuera_zona, updated_at, created_at",
+            )
             .eq("user_id", user.id)
             .eq("tipo", "fin")
             .eq("entrada_id", entradaId)
@@ -386,13 +455,17 @@ export default function OperarioMaquinariaImplementoFin() {
             if (row.latitud == null || row.longitud == null) {
               const geo = await getGeoPayload(user.id, entradaId);
               if (geo.lat != null) {
-                await supabase.from("revision_implemento").update({
-                  latitud: geo.lat, longitud: geo.lon,
-                  precision_gps: geo.accuracy,
-                  fuera_zona: geo.fuera_zona,
-                  hac_ste: geo.hac_ste,
-                  suerte_nom: geo.suerte_nom,
-                }).eq("id", row.id);
+                await supabase
+                  .from("revision_implemento")
+                  .update({
+                    latitud: geo.lat,
+                    longitud: geo.lon,
+                    precision_gps: geo.accuracy,
+                    fuera_zona: geo.fuera_zona,
+                    hac_ste: geo.hac_ste,
+                    suerte_nom: geo.suerte_nom,
+                  })
+                  .eq("id", row.id);
               }
             }
             return;
@@ -477,22 +550,39 @@ export default function OperarioMaquinariaImplementoFin() {
 
         if (uploadErr) {
           console.error("[storage upload implemento fin]", uploadErr.message);
-          await savePhotoOffline(blob, tipo, filePath, revisionId, user.id, entradaId);
-        } else {
-          const { error: upsertErr } = await supabase.from("revision_implemento_fotos").upsert(
-            {
-              revision_id: revisionId,
-              user_id: user.id,
-              foto_tipo: tipo,
-              foto_path: filePath,
-              foto_url: null,
-            },
-            { onConflict: "revision_id,foto_tipo" } as any
+          await savePhotoOffline(
+            blob,
+            tipo,
+            filePath,
+            revisionId,
+            user.id,
+            entradaId,
           );
-          if (upsertErr) console.error("[implemento fotos upsert fin]", upsertErr.message);
+        } else {
+          const { error: upsertErr } = await supabase
+            .from("revision_implemento_fotos")
+            .upsert(
+              {
+                revision_id: revisionId,
+                user_id: user.id,
+                foto_tipo: tipo,
+                foto_path: filePath,
+                foto_url: null,
+              },
+              { onConflict: "revision_id,foto_tipo" } as any,
+            );
+          if (upsertErr)
+            console.error("[implemento fotos upsert fin]", upsertErr.message);
         }
       } else {
-        await savePhotoOffline(blob, tipo, filePath, revisionId, user.id, entradaId);
+        await savePhotoOffline(
+          blob,
+          tipo,
+          filePath,
+          revisionId,
+          user.id,
+          entradaId,
+        );
       }
 
       // Marcar localmente siempre
@@ -510,7 +600,7 @@ export default function OperarioMaquinariaImplementoFin() {
     filePath: string,
     revisionId: string,
     userId: string,
-    entradaId: string
+    entradaId: string,
   ) => {
     try {
       const b64 = await blobToBase64(blob);
@@ -518,7 +608,11 @@ export default function OperarioMaquinariaImplementoFin() {
       const next = [
         ...all.filter((p) => !(p.revisionId === revisionId && p.tipo === tipo)),
         {
-          revisionId, userId, entradaId, tipo, filePath,
+          revisionId,
+          userId,
+          entradaId,
+          tipo,
+          filePath,
           blobBase64: b64,
           contentType: "image/webp",
           timestamp: new Date().toISOString(),
@@ -541,10 +635,18 @@ export default function OperarioMaquinariaImplementoFin() {
   return (
     <div className="p-4 max-w-lg mx-auto space-y-4">
       <div className="flex items-center gap-2">
-        <Button type="button" variant="ghost" size="icon" onClick={() => navigate(-1)} disabled={loading}>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          onClick={() => navigate(-1)}
+          disabled={loading}
+        >
           <ArrowLeft className="h-5 w-5" />
         </Button>
-        <h1 className="text-xl font-semibold">Revisión implemento — fin turno</h1>
+        <h1 className="text-xl font-semibold">
+          Revisión implemento — fin turno
+        </h1>
         {isOffline && (
           <span className="ml-auto flex items-center gap-1 text-xs text-amber-600 bg-amber-50 border border-amber-200 px-2 py-1 rounded-full">
             <WifiOff className="h-3 w-3" /> Sin red
@@ -553,7 +655,8 @@ export default function OperarioMaquinariaImplementoFin() {
       </div>
 
       <p className="text-sm text-muted-foreground">
-        Captura las <strong>2 fotos obligatorias</strong> del implemento para cerrar el turno.
+        Captura las <strong>2 fotos obligatorias</strong> del implemento para
+        cerrar el turno.
         {isOffline && (
           <span className="block mt-1 text-amber-600 font-medium">
             Modo offline: las fotos se sincronizarán cuando vuelva la conexión.
@@ -590,7 +693,9 @@ export default function OperarioMaquinariaImplementoFin() {
             )}
             {f.label}
             {subidas[f.key] && isOffline ? (
-              <span className="ml-auto text-xs text-amber-500">pendiente sync</span>
+              <span className="ml-auto text-xs text-amber-500">
+                pendiente sync
+              </span>
             ) : null}
           </Button>
         ))}
@@ -610,7 +715,9 @@ export default function OperarioMaquinariaImplementoFin() {
           finalizar();
         }}
       >
-        {creating ? "Preparando revisión..." : "Finalizar revisión implemento fin"}
+        {creating
+          ? "Preparando revisión..."
+          : "Finalizar revisión implemento fin"}
       </Button>
     </div>
   );
