@@ -32,6 +32,7 @@ type AttendanceRow = {
   user_id: string;
   tipo_registro: 'entrada' | 'salida';
   timestamp: string;
+  foto_url: string | null;   // ← NUEVO
 };
 
 type RevisionRow = {
@@ -53,6 +54,22 @@ type EvidenciaRow = {
   foto_url: string | null;
   timestamp: string;
 };
+
+// ─── Tipos checklist ─────────────────────────────────────────────────────────
+
+type ChecklistMaq = {
+  estado_llantas:  string | null;
+  nivel_fluidos:   string | null;
+  presenta_fugas:  string | null;
+};
+
+type ChecklistImp = {
+  estado_soldadura: string | null;
+  fugas_aceite:     string | null;
+};
+
+type RevisionMaqFull = RevisionRow & ChecklistMaq;
+type RevisionImpFull = RevisionRow & ChecklistImp;
 
 // ─── Tipos modal ─────────────────────────────────────────────────────────────
 
@@ -77,6 +94,27 @@ const LABEL_IMP: Record<FotoTipoImp, string> = {
   implemento_frente: 'Implemento frontal', implemento_lateral: 'Implemento lateral',
 };
 
+// ─── Labels checklist ────────────────────────────────────────────────────────
+
+const LABEL_LLANTAS: Record<string, { text: string; color: string }> = {
+  malas:       { text: 'Malas',    color: 'bg-red-100 text-red-700 border-red-300' },
+  regulares:   { text: 'Regular',  color: 'bg-amber-100 text-amber-700 border-amber-300' },
+  buen_estado: { text: 'Buenas',   color: 'bg-emerald-100 text-emerald-700 border-emerald-300' },
+};
+const LABEL_FLUIDOS: Record<string, { text: string; color: string }> = {
+  bajo:  { text: 'Bajo',  color: 'bg-red-100 text-red-700 border-red-300' },
+  medio: { text: 'Medio', color: 'bg-amber-100 text-amber-700 border-amber-300' },
+  alto:  { text: 'Alto',  color: 'bg-emerald-100 text-emerald-700 border-emerald-300' },
+};
+const LABEL_FUGAS: Record<string, { text: string; color: string }> = {
+  si: { text: 'Sí', color: 'bg-red-100 text-red-700 border-red-300' },
+  no: { text: 'No', color: 'bg-emerald-100 text-emerald-700 border-emerald-300' },
+};
+const LABEL_SOLDADURA: Record<string, { text: string; color: string }> = {
+  mal_estado:  { text: 'Mal',   color: 'bg-red-100 text-red-700 border-red-300' },
+  buen_estado: { text: 'Buena', color: 'bg-emerald-100 text-emerald-700 border-emerald-300' },
+};
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function todayISO() { return format(new Date(), 'yyyy-MM-dd'); }
@@ -85,6 +123,18 @@ async function signPath(path: string): Promise<string> {
   const { data, error } = await supabase.storage.from('attendance-photos').createSignedUrl(path, 60 * 30);
   if (error) throw error;
   return data.signedUrl;
+}
+
+// Badge pequeño para valor de checklist
+function CLBadge({ val, map }: { val: string | null; map: Record<string, { text: string; color: string }> }) {
+  if (!val) return <span className="text-[10px] text-muted-foreground">—</span>;
+  const entry = map[val];
+  if (!entry) return <span className="text-[10px] text-muted-foreground">{val}</span>;
+  return (
+    <span className={`inline-block text-[9px] font-medium px-1 py-0.5 rounded border ${entry.color}`}>
+      {entry.text}
+    </span>
+  );
 }
 
 // ─── Componente ──────────────────────────────────────────────────────────────
@@ -97,23 +147,21 @@ export default function SupervisorMaquinaria() {
   const [error, setError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
 
-  // ✅ Filtros
   const [zonaFilter, setZonaFilter] = useState<string>('all');
   const [nombreFilter, setNombreFilter] = useState<string>('');
 
   // Datos crudos
   const [operarios, setOperarios] = useState<OperarioRow[]>([]);
   const [attendance, setAttendance] = useState<AttendanceRow[]>([]);
-  const [maqRevisions, setMaqRevisions] = useState<RevisionRow[]>([]);
+  const [maqRevisions, setMaqRevisions] = useState<RevisionMaqFull[]>([]);   // ← FULL con checklist
   const [maqFotoCounts, setMaqFotoCounts] = useState<FotoCount[]>([]);
-  const [impRevisions, setImpRevisions] = useState<RevisionRow[]>([]);
+  const [impRevisions, setImpRevisions] = useState<RevisionImpFull[]>([]);   // ← FULL con checklist
   const [impFotoCounts, setImpFotoCounts] = useState<FotoCount[]>([]);
   const [evidencias, setEvidencias] = useState<EvidenciaRow[]>([]);
 
   // Modal
   const [modal, setModal] = useState<ModalState>(MODAL_INICIAL);
 
-  // ✅ Zonas únicas extraídas de los operarios cargados
   const zonas = useMemo(() => {
     const set = new Set<string>();
     for (const op of operarios) if (op.zona) set.add(op.zona);
@@ -171,6 +219,17 @@ export default function SupervisorMaquinaria() {
     }
   };
 
+  // ── [NUEVO] Abrir foto entrada o salida (foto_url directa, no path) ───────
+  const openAttendancePhoto = (url: string, tipo: 'entrada' | 'salida', nombre: string | null, hora: string) => {
+    setModal({
+      open: true,
+      title: `Foto ${tipo} — ${nombre ?? 'Operario'} (${hora})`,
+      loading: false,
+      error: null,
+      fotos: [{ label: `Foto ${tipo}`, url }],
+    });
+  };
+
   // ── Carga principal ───────────────────────────────────────────────────────
 
   const load = async () => {
@@ -192,7 +251,6 @@ export default function SupervisorMaquinaria() {
         return;
       }
 
-      // ✅ Incluye zona en la query de perfiles
       const { data: profs, error: pErr } = await supabase
         .from('profiles').select('id, nombre, zona').in('id', ids);
       if (pErr) throw new Error(pErr.message);
@@ -209,17 +267,20 @@ export default function SupervisorMaquinaria() {
       const startOfDay = `${dateISO} 00:00:00`;
       const endOfDay   = `${dateISO} 23:59:59`;
 
+      // ── [MODIFICADO] Incluir foto_url en asistencia ───────────────────────
       const { data: att, error: aErr } = await supabase
-        .from('registros_asistencia').select('id, user_id, tipo_registro, timestamp')
+        .from('registros_asistencia').select('id, user_id, tipo_registro, timestamp, foto_url')
         .eq('fecha', dateISO).in('user_id', ids);
       if (aErr) throw new Error(aErr.message);
       setAttendance((att || []) as AttendanceRow[]);
 
+      // ── [MODIFICADO] Incluir columnas checklist en revision_maquinaria ────
       const { data: maqRev, error: maqRevErr } = await supabase
-        .from('revision_maquinaria').select('id, user_id, tipo, created_at')
+        .from('revision_maquinaria')
+        .select('id, user_id, tipo, created_at, estado_llantas, nivel_fluidos, presenta_fugas')
         .in('user_id', ids).gte('created_at', startOfDay).lte('created_at', endOfDay);
       if (maqRevErr) throw new Error(maqRevErr.message);
-      const maqRevList = (maqRev || []) as RevisionRow[];
+      const maqRevList = (maqRev || []) as RevisionMaqFull[];
       setMaqRevisions(maqRevList);
 
       const maqRevIds = maqRevList.map((r) => r.id);
@@ -234,11 +295,13 @@ export default function SupervisorMaquinaria() {
       }
       setMaqFotoCounts(maqCounts);
 
+      // ── [MODIFICADO] Incluir columnas checklist en revision_implemento ────
       const { data: impRev, error: impRevErr } = await supabase
-        .from('revision_implemento').select('id, user_id, tipo, created_at')
+        .from('revision_implemento')
+        .select('id, user_id, tipo, created_at, estado_soldadura, fugas_aceite')
         .in('user_id', ids).gte('created_at', startOfDay).lte('created_at', endOfDay);
       if (impRevErr) throw new Error(impRevErr.message);
-      const impRevList = (impRev || []) as RevisionRow[];
+      const impRevList = (impRev || []) as RevisionImpFull[];
       setImpRevisions(impRevList);
 
       const impRevIds = impRevList.map((r) => r.id);
@@ -321,7 +384,6 @@ export default function SupervisorMaquinaria() {
     }).sort((a, b) => (a.nombre ?? '').localeCompare(b.nombre ?? ''));
   }, [operarios, attendance, maqRevisions, maqFotoCounts, impRevisions, impFotoCounts, evidencias]);
 
-  // ✅ Filtros aplicados en memoria (no requieren nueva query)
   const operariosFiltrados = useMemo(() => {
     return operariosConEstado.filter((op) => {
       const passZona   = zonaFilter === 'all' || op.zona === zonaFilter;
@@ -331,7 +393,6 @@ export default function SupervisorMaquinaria() {
     });
   }, [operariosConEstado, zonaFilter, nombreFilter]);
 
-  // ── Métricas sobre lista filtrada ─────────────────────────────────────────
   const metrics = useMemo(() => {
     const l = operariosFiltrados;
     return {
@@ -375,6 +436,73 @@ export default function SupervisorMaquinaria() {
     );
   }
 
+  // ── [NUEVO] Badge foto asistencia (entrada o salida) ─────────────────────
+  function badgeFotoAsistencia(
+    row: AttendanceRow | null,
+    tipo: 'entrada' | 'salida',
+    nombre: string | null,
+  ) {
+    if (!row) return <Badge variant="outline" className="text-muted-foreground text-xs">—</Badge>;
+    const hora = format(new Date(row.timestamp), 'HH:mm');
+    return (
+      <div className="flex flex-col items-center gap-1">
+        <Badge className="bg-emerald-600 hover:bg-emerald-600 text-xs">{hora}</Badge>
+        {row.foto_url ? (
+          <button
+            onClick={() => openAttendancePhoto(row.foto_url!, tipo, nombre, hora)}
+            className="flex items-center gap-0.5 text-[10px] text-primary hover:underline leading-none"
+          >
+            <Eye className="h-2.5 w-2.5" /> Ver foto
+          </button>
+        ) : (
+          <span className="text-[10px] text-muted-foreground leading-none">Sin foto</span>
+        )}
+      </div>
+    );
+  }
+
+  // ── [NUEVO] Bloque checklist maquinaria inline ────────────────────────────
+  function checklistMaqInline(rev: RevisionMaqFull | null) {
+    if (!rev) return <span className="text-[10px] text-muted-foreground">—</span>;
+    const ninguno = !rev.estado_llantas && !rev.nivel_fluidos && !rev.presenta_fugas;
+    if (ninguno) return <span className="text-[10px] text-muted-foreground">Sin datos</span>;
+    return (
+      <div className="flex flex-col gap-0.5 items-start">
+        <div className="flex items-center gap-1 text-[9px] text-muted-foreground">
+          <span className="w-12 shrink-0">Llantas:</span>
+          <CLBadge val={rev.estado_llantas} map={LABEL_LLANTAS} />
+        </div>
+        <div className="flex items-center gap-1 text-[9px] text-muted-foreground">
+          <span className="w-12 shrink-0">Fluidos:</span>
+          <CLBadge val={rev.nivel_fluidos} map={LABEL_FLUIDOS} />
+        </div>
+        <div className="flex items-center gap-1 text-[9px] text-muted-foreground">
+          <span className="w-12 shrink-0">Fugas:</span>
+          <CLBadge val={rev.presenta_fugas} map={LABEL_FUGAS} />
+        </div>
+      </div>
+    );
+  }
+
+  // ── [NUEVO] Bloque checklist implemento inline ────────────────────────────
+  function checklistImpInline(rev: RevisionImpFull | null) {
+    if (!rev) return <span className="text-[10px] text-muted-foreground">—</span>;
+    const ninguno = !rev.estado_soldadura && !rev.fugas_aceite;
+    if (ninguno) return <span className="text-[10px] text-muted-foreground">Sin datos</span>;
+    return (
+      <div className="flex flex-col gap-0.5 items-start">
+        <div className="flex items-center gap-1 text-[9px] text-muted-foreground">
+          <span className="w-14 shrink-0">Soldadura:</span>
+          <CLBadge val={rev.estado_soldadura} map={LABEL_SOLDADURA} />
+        </div>
+        <div className="flex items-center gap-1 text-[9px] text-muted-foreground">
+          <span className="w-14 shrink-0">Fugas ac.:</span>
+          <CLBadge val={rev.fugas_aceite} map={LABEL_FUGAS} />
+        </div>
+      </div>
+    );
+  }
+
   const hayFiltros = zonaFilter !== 'all' || nombreFilter.trim() !== '';
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -405,8 +533,6 @@ export default function SupervisorMaquinaria() {
             <p className="text-xs text-muted-foreground">Fecha</p>
             <Input type="date" value={dateISO} onChange={(e) => setDateISO(e.target.value)} className="w-[160px]" />
           </div>
-
-          {/* ✅ Zona dropdown */}
           <div className="space-y-1">
             <p className="text-xs text-muted-foreground">Zona</p>
             <Select value={zonaFilter} onValueChange={setZonaFilter}>
@@ -421,8 +547,6 @@ export default function SupervisorMaquinaria() {
               </SelectContent>
             </Select>
           </div>
-
-          {/* ✅ Nombre búsqueda libre */}
           <div className="space-y-1">
             <p className="text-xs text-muted-foreground">Buscar operario</p>
             <Input
@@ -432,7 +556,6 @@ export default function SupervisorMaquinaria() {
               className="w-[180px]"
             />
           </div>
-
           <div className="pb-0.5 flex flex-col gap-0.5">
             <p className="text-xs text-muted-foreground">
               Actualizado: {format(lastRefresh, 'HH:mm:ss')}
@@ -449,7 +572,6 @@ export default function SupervisorMaquinaria() {
           </div>
         </div>
 
-        {/* Indicador filtros activos */}
         {hayFiltros && (
           <div className="flex items-center gap-2 text-xs text-muted-foreground bg-muted/40 rounded px-3 py-1.5">
             <span>Mostrando {operariosFiltrados.length} de {operariosConEstado.length} operarios</span>
@@ -458,7 +580,7 @@ export default function SupervisorMaquinaria() {
           </div>
         )}
 
-        {/* ── Cards métricas (reflejan filtros) ── */}
+        {/* ── Cards métricas ── */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
           <Card>
             <CardHeader className="pb-1"><CardTitle className="text-xs text-muted-foreground flex items-center gap-1"><Users className="h-3.5 w-3.5" /> Total operarios</CardTitle></CardHeader>
@@ -520,78 +642,115 @@ export default function SupervisorMaquinaria() {
             </p>
           ) : (
             <div className="rounded-lg border overflow-x-auto">
-              <table className="w-full text-xs sm:text-sm min-w-[960px]">
+              {/* min-w ampliado para las columnas nuevas */}
+              <table className="w-full text-xs sm:text-sm min-w-[1100px]">
                 <thead className="bg-muted/50 border-b">
                   <tr>
                     <th className="text-left px-3 py-2 font-medium text-muted-foreground">Nombre</th>
                     <th className="text-left px-2 py-2 font-medium text-muted-foreground">Zona</th>
+
+                    {/* ── Entrada ── */}
                     <th className="text-center px-2 py-2 font-medium text-muted-foreground">Entrada</th>
-                    <th className="text-center px-2 py-2 font-medium text-muted-foreground"><span className="flex items-center justify-center gap-1"><ClipboardCheck className="h-3 w-3" /> Maq. Ini.</span></th>
-                    <th className="text-center px-2 py-2 font-medium text-muted-foreground"><span className="flex items-center justify-center gap-1"><Wrench className="h-3 w-3" /> Imp. Ini.</span></th>
-                    <th className="text-center px-2 py-2 font-medium text-muted-foreground"><span className="flex items-center justify-center gap-1"><Camera className="h-3 w-3" /> Ev. 1</span></th>
-                    <th className="text-center px-2 py-2 font-medium text-muted-foreground"><span className="flex items-center justify-center gap-1"><Camera className="h-3 w-3" /> Ev. 2</span></th>
-                    <th className="text-center px-2 py-2 font-medium text-muted-foreground"><span className="flex items-center justify-center gap-1"><Wrench className="h-3 w-3" /> Imp. Fin</span></th>
-                    <th className="text-center px-2 py-2 font-medium text-muted-foreground"><span className="flex items-center justify-center gap-1"><ClipboardCheck className="h-3 w-3" /> Maq. Fin</span></th>
+
+                    {/* ── Revisión Maquinaria ── */}
+                    <th className="text-center px-2 py-2 font-medium text-muted-foreground">
+                      <span className="flex items-center justify-center gap-1"><ClipboardCheck className="h-3 w-3" /> Maq. Ini.<br/><span className="font-normal text-[10px]">Fotos / CL</span></span>
+                    </th>
+                    <th className="text-center px-2 py-2 font-medium text-muted-foreground">
+                      <span className="text-[10px] font-normal text-muted-foreground/70">Checklist<br/>Maq. Ini.</span>
+                    </th>
+                    <th className="text-center px-2 py-2 font-medium text-muted-foreground">
+                      <span className="flex items-center justify-center gap-1"><Wrench className="h-3 w-3" /> Imp. Ini.<br/><span className="font-normal text-[10px]">Fotos / CL</span></span>
+                    </th>
+                    <th className="text-center px-2 py-2 font-medium text-muted-foreground">
+                      <span className="text-[10px] font-normal text-muted-foreground/70">Checklist<br/>Imp. Ini.</span>
+                    </th>
+
+                    {/* ── Revisión Implemento Fin ── */}
+                    <th className="text-center px-2 py-2 font-medium text-muted-foreground">
+                      <span className="flex items-center justify-center gap-1"><Wrench className="h-3 w-3" /> Imp. Fin<br/><span className="font-normal text-[10px]">Fotos / CL</span></span>
+                    </th>
+                    <th className="text-center px-2 py-2 font-medium text-muted-foreground">
+                      <span className="text-[10px] font-normal text-muted-foreground/70">Checklist<br/>Imp. Fin</span>
+                    </th>
+
+                    {/* ── Revisión Maquinaria Fin ── */}
+                    <th className="text-center px-2 py-2 font-medium text-muted-foreground">
+                      <span className="flex items-center justify-center gap-1"><ClipboardCheck className="h-3 w-3" /> Maq. Fin<br/><span className="font-normal text-[10px]">Fotos / CL</span></span>
+                    </th>
+                    <th className="text-center px-2 py-2 font-medium text-muted-foreground">
+                      <span className="text-[10px] font-normal text-muted-foreground/70">Checklist<br/>Maq. Fin</span>
+                    </th>
+
+                    {/* ── Salida (última columna) ── */}
                     <th className="text-center px-2 py-2 font-medium text-muted-foreground">Salida</th>
                   </tr>
                 </thead>
                 <tbody>
                   {operariosFiltrados.map((op, i) => (
                     <tr key={op.user_id} className={`${i % 2 === 0 ? 'bg-background' : 'bg-muted/20'} ${op.flujoCompleto ? 'border-l-2 border-l-emerald-500' : ''}`}>
+
+                      {/* Nombre */}
                       <td className="px-3 py-2 font-medium truncate max-w-[130px]">
                         {op.nombre ?? <span className="text-muted-foreground italic">Sin nombre</span>}
                         {op.flujoCompleto && <span className="ml-1 text-emerald-600 text-xs">✅</span>}
                       </td>
-                      {/* ✅ Zona visible en tabla */}
+
+                      {/* Zona */}
                       <td className="px-2 py-2 text-muted-foreground text-xs truncate max-w-[90px]">
                         {op.zona ?? <span className="italic">—</span>}
                       </td>
+
+                      {/* ── [NUEVO] Entrada con foto ── */}
                       <td className="px-2 py-2 text-center">
-                        {op.entrada ? (
-                          <Badge className="bg-emerald-600 hover:bg-emerald-600 text-xs">{format(new Date(op.entrada.timestamp), 'HH:mm')}</Badge>
-                        ) : (
-                          <Badge variant="outline" className="text-muted-foreground text-xs">—</Badge>
-                        )}
+                        {badgeFotoAsistencia(op.entrada, 'entrada', op.nombre)}
                       </td>
+
+                      {/* Maq Inicio — fotos */}
                       <td className="px-2 py-2 text-center">
                         {badgeConFotos(op.maqInicioFotos, REQUIRED_MAQ, () => op.maqInicio && openMaqPhotos(op.maqInicio.id, `Maq. Inicio — ${op.nombre ?? ''}`))}
                       </td>
+
+                      {/* ── [NUEVO] Maq Inicio — checklist inline ── */}
+                      <td className="px-2 py-2">
+                        {checklistMaqInline(op.maqInicio)}
+                      </td>
+
+                      {/* Imp Inicio — fotos */}
                       <td className="px-2 py-2 text-center">
                         {badgeConFotos(op.impInicioFotos, REQUIRED_IMP, () => op.impInicio && openImpPhotos(op.impInicio.id, `Imp. Inicio — ${op.nombre ?? ''}`))}
                       </td>
-                      <td className="px-2 py-2 text-center">
-                        <div className="flex flex-col items-center gap-1">
-                          {op.hasEv1 ? <Badge className="bg-emerald-600 hover:bg-emerald-600 text-xs">✓</Badge> : <Badge variant="outline" className="text-muted-foreground text-xs">—</Badge>}
-                          {op.hasEv1 && op.entradaId && (
-                            <button onClick={() => openEvidenciaPhotos(op.user_id, op.entradaId!, op.nombre)} className="flex items-center gap-0.5 text-[10px] text-primary hover:underline leading-none">
-                              <Eye className="h-2.5 w-2.5" /> Ver
-                            </button>
-                          )}
-                        </div>
+
+                      {/* ── [NUEVO] Imp Inicio — checklist inline ── */}
+                      <td className="px-2 py-2">
+                        {checklistImpInline(op.impInicio)}
                       </td>
-                      <td className="px-2 py-2 text-center">
-                        <div className="flex flex-col items-center gap-1">
-                          {op.hasEv2 ? <Badge className="bg-emerald-600 hover:bg-emerald-600 text-xs">✓</Badge> : <Badge variant="outline" className="text-muted-foreground text-xs">—</Badge>}
-                          {op.hasEv2 && op.entradaId && (
-                            <button onClick={() => openEvidenciaPhotos(op.user_id, op.entradaId!, op.nombre)} className="flex items-center gap-0.5 text-[10px] text-primary hover:underline leading-none">
-                              <Eye className="h-2.5 w-2.5" /> Ver
-                            </button>
-                          )}
-                        </div>
-                      </td>
+
+                      {/* Imp Fin — fotos */}
                       <td className="px-2 py-2 text-center">
                         {badgeConFotos(op.impFinFotos, REQUIRED_IMP, () => op.impFin && openImpPhotos(op.impFin.id, `Imp. Fin — ${op.nombre ?? ''}`))}
                       </td>
+
+                      {/* ── [NUEVO] Imp Fin — checklist inline ── */}
+                      <td className="px-2 py-2">
+                        {checklistImpInline(op.impFin)}
+                      </td>
+
+                      {/* Maq Fin — fotos */}
                       <td className="px-2 py-2 text-center">
                         {badgeConFotos(op.maqFinFotos, REQUIRED_MAQ, () => op.maqFin && openMaqPhotos(op.maqFin.id, `Maq. Fin — ${op.nombre ?? ''}`))}
                       </td>
-                      <td className="px-2 py-2 text-center">
-                        {op.salida ? (
-                          <Badge className="bg-emerald-600 hover:bg-emerald-600 text-xs">{format(new Date(op.salida.timestamp), 'HH:mm')}</Badge>
-                        ) : (
-                          <Badge variant="outline" className="text-muted-foreground text-xs">—</Badge>
-                        )}
+
+                      {/* ── [NUEVO] Maq Fin — checklist inline ── */}
+                      <td className="px-2 py-2">
+                        {checklistMaqInline(op.maqFin)}
                       </td>
+
+                      {/* ── Salida con foto — última columna ── */}
+                      <td className="px-2 py-2 text-center">
+                        {badgeFotoAsistencia(op.salida, 'salida', op.nombre)}
+                      </td>
+
                     </tr>
                   ))}
                 </tbody>
@@ -622,7 +781,7 @@ export default function SupervisorMaquinaria() {
           ) : modal.error ? (
             <div className="p-3 rounded bg-destructive/10 text-sm text-destructive">{modal.error}</div>
           ) : modal.fotos.length === 0 ? (
-            <div className="p-3 rounded bg-muted text-sm text-muted-foreground">No hay fotos disponibles para esta revisión.</div>
+            <div className="p-3 rounded bg-muted text-sm text-muted-foreground">No hay fotos disponibles.</div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-[60vh] overflow-y-auto pr-1">
               {modal.fotos.map((f, idx) => (

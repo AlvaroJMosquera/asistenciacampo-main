@@ -16,6 +16,38 @@ function isIOS() {
   return /iPad|iPhone|iPod/.test(navigator.userAgent) || ((navigator as any).maxTouchPoints > 1 && /MacIntel/.test(navigator.platform));
 }
 
+/**
+ * Detecta si el dispositivo tiene poca RAM.
+ * navigator.deviceMemory está disponible en Chrome/Android (en GB).
+ * Si es <= 2 GB o no está disponible (dispositivo viejo), consideramos "low memory".
+ */
+function isLowMemoryDevice(): boolean {
+  const mem = (navigator as any).deviceMemory as number | undefined;
+  if (mem === undefined) return true; // dispositivo viejo = asumir bajo
+  return mem <= 2;
+}
+
+/**
+ * Opciones de compresión según capacidad del dispositivo.
+ * - Low memory: máx 0.3 MB / 960px  → menos RAM al procesar
+ * - Normal:     máx 0.5 MB / 1280px → calidad estándar (comportamiento anterior)
+ */
+function getCompressionOptions() {
+  if (isLowMemoryDevice()) {
+    return {
+      maxSizeMB: 0.3,
+      maxWidthOrHeight: 960,
+      useWebWorker: true,
+      initialQuality: 0.7,
+    };
+  }
+  return {
+    maxSizeMB: 0.5,
+    maxWidthOrHeight: 1280,
+    useWebWorker: true,
+  };
+}
+
 export function useCamera() {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [state, setState] = useState<CameraState>({
@@ -79,12 +111,10 @@ export function useCamera() {
         done = true;
 
         try {
-          // ✅ Comprimir (campo) - ojo: algunos Android se demoran
-          const compressed = await imageCompression(file, {
-            maxSizeMB: 0.5,
-            maxWidthOrHeight: 1280,
-            useWebWorker: true,
-          });
+          // ✅ Compresión adaptativa: menos agresiva en dispositivos con buena RAM,
+          //    más conservadora en dispositivos con poca memoria.
+          const options = getCompressionOptions();
+          const compressed = await imageCompression(file, options);
 
           cleanup();
           setState({ isCapturing: false, error: null });
@@ -98,10 +128,8 @@ export function useCamera() {
       };
 
       // ✅ Cancelación estable: solo por timeout largo
-      // (Si el usuario toma foto, onchange llegará y cancelTimer se limpia en cleanup)
-      const cancelMs = isAndroid() ? 45000 : 30000; // Android a veces tarda más
+      const cancelMs = isAndroid() ? 45000 : 30000;
       const cancelTimer = window.setTimeout(() => {
-        // Si no llegó onchange, asumimos cancelado
         if (!done) finishReject('Captura cancelada');
       }, cancelMs);
 
@@ -114,14 +142,11 @@ export function useCamera() {
         void finishResolve(file);
       };
 
-      // ✅ SOLO iOS/desktop: algunos navegadores no disparan onchange si cancelan,
-      // y estos handlers ayudan. En Android causan falsos positivos, por eso se desactivan.
+      // ✅ SOLO iOS/desktop
       const onVis = () => {
-        // iOS: espera bastante antes de asumir cancelación
         setTimeout(() => {
           if (!done && (!input.files || input.files.length === 0)) {
             // No rechazamos de inmediato: dejamos que el timeout principal decida.
-            // (Esto evita falsos cancel).
           }
         }, 1500);
       };
