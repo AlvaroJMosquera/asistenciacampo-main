@@ -16,10 +16,10 @@ const empresarialClient = createClient(
 
 // ── EDITA AQUÍ ────────────────────────────────────────────────
 const USUARIOS: { email: string; password: string }[] = [
-  //{ email: 'maquinaria@prueba.com', password: '123456' },
-  { email: 'supervisormaquinaria@prueba.com', password: '123456' },
-  //{ email: 'prueba@prueba.com', password: '123456' },
- // { email: 'sacorreaca@unal.edu.co', password: '123456' },
+ // { email: 'orejuelasteven88@gmail.com', password: '123456' },
+  //{ email: 'johan@segprovi.com', password: '123456' },
+  //{ email: 'leonardohernandezgomez222@gmail.com', password: '123456' },
+  { email: 'julian@segprovi.com', password: '123456' },
 
 ]
 // ─────────────────────────────────────────────────────────────
