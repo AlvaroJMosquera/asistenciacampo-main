@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import {
@@ -89,12 +89,6 @@ function writeLocalFollowups(userId: string, entradaId: string, rows: FollowUpRo
   try { localStorage.setItem(storageKey(userId, entradaId), JSON.stringify(rows)); } catch {}
 }
 
-function isIOS() {
-  if (typeof navigator === 'undefined') return false;
-  return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-    (navigator.platform === 'MacIntel' && (navigator as any).maxTouchPoints > 1);
-}
-
 function formatDuration(ms: number) {
   const totalSec = Math.floor(ms / 1000);
   const h = Math.floor(totalSec / 3600);
@@ -134,14 +128,17 @@ export default function OperarioCuadrilla() {
 
   const { capturePhoto, error: cameraError } = useCamera();
 
-  const [remoteFollowups, setRemoteFollowups] = useState<FollowUpRow[]>([]);
-  const [localFollowups, setLocalFollowups] = useState<FollowUpRow[]>([]);
+  // ── Guard contra doble tap ────────────────────────────────────────────────
+  const processingRef = useRef(false);
+
+  const [remoteFollowups, setRemoteFollowups]       = useState<FollowUpRow[]>([]);
+  const [localFollowups, setLocalFollowups]         = useState<FollowUpRow[]>([]);
   const [isLoadingFollowups, setIsLoadingFollowups] = useState(false);
 
-  const [geoOpen, setGeoOpen] = useState(false);
-  const [geoInfo, setGeoInfo] = useState<{ nom: string; hac_ste: string } | null>(null);
+  const [geoOpen, setGeoOpen]     = useState(false);
+  const [geoInfo, setGeoInfo]     = useState<{ nom: string; hac_ste: string } | null>(null);
   const [geoCoords, setGeoCoords] = useState<{ lat: number | null; lon: number | null; accuracy: number | null } | null>(null);
-  const [geoMsg, setGeoMsg] = useState<string | null>(null);
+  const [geoMsg, setGeoMsg]       = useState<string | null>(null);
 
   const [attendanceResult, setAttendanceResult] = useState<AttendanceResult>({
     isOpen: false, tipo: 'entrada', success: false,
@@ -153,15 +150,25 @@ export default function OperarioCuadrilla() {
     return () => clearInterval(t);
   }, []);
 
-  const [earlyExitOpen, setEarlyExitOpen] = useState(false);
-  const [earlyExitMotivo, setEarlyExitMotivo] = useState('');
+  // ── Modal entrada tarde ───────────────────────────────────────────────────
+  const [lateEntryOpen, setLateEntryOpen]       = useState(false);
+  const [lateEntryMotivo, setLateEntryMotivo]   = useState('');
+  const [pendingLateEntry, setPendingLateEntry] = useState<{
+    photoBlob: Blob;
+    arrEval: ReturnType<typeof evaluateArrival>;
+    timestampISO: string;
+  } | null>(null);
+
+  // ── Modal salida temprana ─────────────────────────────────────────────────
+  const [earlyExitOpen, setEarlyExitOpen]       = useState(false);
+  const [earlyExitMotivo, setEarlyExitMotivo]   = useState('');
   const [pendingExit, setPendingExit] = useState<{
     salidaPhotoBlob: Blob;
     exitEval: ReturnType<typeof evaluateExit>;
     exitTimestampISO: string;
   } | null>(null);
 
-  const today = format(new Date(), "EEEE, d 'de' MMMM", { locale: es });
+  const today       = format(new Date(), "EEEE, d 'de' MMMM", { locale: es });
   const hoursWorked = calculateHoursWorked({ includeOpenSession: false });
 
   const scheduleLabel = useMemo(() => {
@@ -181,6 +188,7 @@ export default function OperarioCuadrilla() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [syncPendingFollowups, getTodayRecords]);
 
+  // ── activeEntrada: entrada sin salida correspondiente ────────────────────
   const activeEntrada = useMemo(() => {
     const sorted = [...todayRecords].sort(
       (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
@@ -188,7 +196,7 @@ export default function OperarioCuadrilla() {
     let current: any = null;
     for (const r of sorted) {
       if (r.tipo_registro === 'entrada') current = r;
-      if (r.tipo_registro === 'salida') current = null;
+      if (r.tipo_registro === 'salida')  current = null;
     }
     return current;
   }, [todayRecords]);
@@ -217,7 +225,7 @@ export default function OperarioCuadrilla() {
   const followups = useMemo(() => {
     const map = new Map<string, FollowUpRow>();
     for (const f of remoteFollowups) map.set(`${f.evidencia_n}`, f);
-    for (const f of localFollowups) map.set(`${f.evidencia_n}`, f);
+    for (const f of localFollowups)  map.set(`${f.evidencia_n}`, f);
     return Array.from(map.values()).sort((a, b) => a.evidencia_n - b.evidencia_n);
   }, [remoteFollowups, localFollowups]);
 
@@ -237,14 +245,14 @@ export default function OperarioCuadrilla() {
     void tick;
     if (!follow1Timestamp) return null;
     const start = new Date(follow1Timestamp).getTime();
-    const end = follow2Timestamp ? new Date(follow2Timestamp).getTime() : Date.now();
+    const end   = follow2Timestamp ? new Date(follow2Timestamp).getTime() : Date.now();
     return Math.max(0, end - start);
   }, [follow1Timestamp, follow2Timestamp, tick]);
 
   const follow1EnabledInfo = useMemo(() => {
     void tick;
     if (!activeEntrada) return { enabled: false, remainingText: 'Primero marca entrada' };
-    const start = new Date(activeEntrada.timestamp).getTime();
+    const start  = new Date(activeEntrada.timestamp).getTime();
     const diffMs = Date.now() - start;
     if (diffMs >= FOLLOWUP_REQUIRED_MS) return { enabled: true, remainingText: '' };
     const remaining = FOLLOWUP_REQUIRED_MS - diffMs;
@@ -253,13 +261,71 @@ export default function OperarioCuadrilla() {
     return { enabled: false, remainingText: `${mins}m ${secs}s` };
   }, [activeEntrada, tick]);
 
-  // ✅ Salida habilitada solo cuando ambas evidencias están completas
-  const canExit = hasFollow1 && hasFollow2;
+  // ── canExit: requiere entrada activa + ambas evidencias ──────────────────
+  const canExit = !!activeEntrada && hasFollow1 && hasFollow2;
 
   const showError = useCallback((tipo: 'entrada' | 'salida', message: string) => {
     setAttendanceResult({ isOpen: true, tipo, success: false, errorMsg: message });
   }, []);
 
+  // ── Confirmar entrada tarde ───────────────────────────────────────────────
+  const confirmLateEntry = useCallback(async () => {
+    if (!pendingLateEntry) return;
+    if (!lateEntryMotivo.trim()) {
+      showError('entrada', 'Debes escribir el motivo de la llegada tarde.');
+      return;
+    }
+    if (processingRef.current) return;
+    processingRef.current = true;
+    try {
+      const arr = pendingLateEntry.arrEval;
+      const meta: any = {
+        client_timestamp:     pendingLateEntry.timestampISO,
+        llegada_estado:       arr.status,
+        minutos_vs_inicio:    arr.diffMin,
+        horario_inicio:       arr.sch.startHHMM,
+        horario_fin:          arr.sch.endHHMM,
+        motivo_llegada_tarde: lateEntryMotivo.trim(),
+      };
+
+      const result = await (markAttendance as any)('entrada', pendingLateEntry.photoBlob, meta);
+
+      setLateEntryOpen(false);
+      setPendingLateEntry(null);
+      setLateEntryMotivo('');
+
+      setGeoCoords(result?.coords ?? null);
+      setGeoInfo(result?.geo ?? null);
+      if (!result?.coords?.lat || !result?.coords?.lon) {
+        setGeoMsg('No se pudo obtener ubicación.');
+      } else if (!result?.geo) {
+        setGeoMsg('GPS OK, pero no se identificó suerte/hacienda.');
+      } else {
+        setGeoMsg(null);
+      }
+
+      setAttendanceResult({
+        isOpen: true, tipo: 'entrada',
+        success:       result?.success,
+        hoursWorked:   result?.hoursWorked,
+        arrivalStatus: arr.status,
+        diffMin:       arr.diffMin,
+        errorMsg:      result?.success ? null : (result?.error ?? 'No se pudo registrar'),
+      });
+
+      if (result?.success) {
+        await getTodayRecords();
+        await loadFollowups();
+        setTimeout(() => setGeoOpen(true), 300);
+      }
+    } catch (err: any) {
+      showError('entrada', err?.message || cameraError || 'Error registrando entrada.');
+    } finally {
+      processingRef.current = false;
+    }
+  }, [pendingLateEntry, lateEntryMotivo, markAttendance, cameraError, showError, getTodayRecords, loadFollowups]);
+
+  // ── Confirmar salida temprana ─────────────────────────────────────────────
   const confirmEarlyExit = useCallback(async () => {
     if (!pendingExit) return;
     if (!earlyExitMotivo.trim()) {
@@ -269,23 +335,22 @@ export default function OperarioCuadrilla() {
     try {
       const permisoBlob = await capturePhoto();
       const result = await (markAttendance as any)('salida', pendingExit.salidaPhotoBlob, {
-        salida_estado: pendingExit.exitEval.status,
-        minutos_antes_fin: pendingExit.exitEval.diffMinToEnd,
+        salida_estado:          pendingExit.exitEval.status,
+        minutos_antes_fin:      pendingExit.exitEval.diffMinToEnd,
         motivo_salida_temprano: earlyExitMotivo.trim(),
-        permiso_firmado_blob: permisoBlob,
-        client_timestamp: pendingExit.exitTimestampISO,
+        permiso_firmado_blob:   permisoBlob,
+        client_timestamp:       pendingExit.exitTimestampISO,
       });
       setEarlyExitOpen(false);
       setPendingExit(null);
       setAttendanceResult({
-        isOpen: true,
-        tipo: 'salida',
-        success: result?.success,
-        hoursWorked: result?.hoursWorked,
-        exitStatus: pendingExit.exitEval.status,
+        isOpen: true, tipo: 'salida',
+        success:      result?.success,
+        hoursWorked:  result?.hoursWorked,
+        exitStatus:   pendingExit.exitEval.status,
         diffMinToEnd: pendingExit.exitEval.diffMinToEnd,
-        endHHMM: format(pendingExit.exitEval.end, 'HH:mm'),
-        errorMsg: result?.success ? null : (result?.error ?? 'No se pudo registrar'),
+        endHHMM:      format(pendingExit.exitEval.end, 'HH:mm'),
+        errorMsg:     result?.success ? null : (result?.error ?? 'No se pudo registrar'),
       });
       if (result?.success) { await getTodayRecords(); await loadFollowups(); }
     } catch (err: any) {
@@ -293,10 +358,12 @@ export default function OperarioCuadrilla() {
     }
   }, [pendingExit, earlyExitMotivo, capturePhoto, markAttendance, cameraError, showError, getTodayRecords, loadFollowups]);
 
+  // ── Marcar entrada / salida ───────────────────────────────────────────────
   const handleMarkAttendance = async (tipo: 'entrada' | 'salida') => {
+    if (processingRef.current) return;
+    processingRef.current = true;
     try {
       if (tipo === 'salida') {
-        // ✅ Ambas evidencias obligatorias
         if (!hasFollow1) {
           showError('salida', 'Debes registrar el inicio de labor (Evidencia 1) antes de marcar la salida.');
           return;
@@ -305,9 +372,8 @@ export default function OperarioCuadrilla() {
           showError('salida', 'Debes registrar el fin de labor (Evidencia 2) antes de marcar la salida.');
           return;
         }
-
         const now = new Date();
-        const ex = evaluateExit(now);
+        const ex  = evaluateExit(now);
         if (ex.status === 'se_fue_antes_mas_30') {
           const salidaBlob = await capturePhoto();
           setPendingExit({ salidaPhotoBlob: salidaBlob, exitEval: ex, exitTimestampISO: now.toISOString() });
@@ -319,26 +385,28 @@ export default function OperarioCuadrilla() {
 
       const photoBlob = await capturePhoto();
       const now = new Date();
-      const meta: any = { client_timestamp: now.toISOString() };
 
       if (tipo === 'entrada') {
         const arr = evaluateArrival(now);
-        meta.llegada_estado = arr.status;
-        meta.minutos_vs_inicio = arr.diffMin;
-        meta.horario_inicio = arr.sch.startHHMM;
-        meta.horario_fin = arr.sch.endHHMM;
-      } else {
-        const ex = evaluateExit(now);
-        meta.salida_estado = ex.status;
-        meta.minutos_antes_fin = ex.diffMinToEnd;
-        meta.horario_inicio = ex.sch.startHHMM;
-        meta.horario_fin = ex.sch.endHHMM;
-      }
 
-      const result = await (markAttendance as any)(tipo, photoBlob, meta);
+        // Si llega tarde → interceptar y pedir motivo
+        if (arr.status === 'tarde') {
+          setPendingLateEntry({ photoBlob, arrEval: arr, timestampISO: now.toISOString() });
+          setLateEntryMotivo('');
+          setLateEntryOpen(true);
+          return; // processingRef se libera en finally
+        }
 
-      if (tipo === 'entrada') {
-        const arr = evaluateArrival(new Date(meta.client_timestamp));
+        // Llegó a tiempo → registrar directamente
+        const meta: any = {
+          client_timestamp:  now.toISOString(),
+          llegada_estado:    arr.status,
+          minutos_vs_inicio: arr.diffMin,
+          horario_inicio:    arr.sch.startHHMM,
+          horario_fin:       arr.sch.endHHMM,
+        };
+        const result = await (markAttendance as any)('entrada', photoBlob, meta);
+
         setGeoCoords(result?.coords ?? null);
         setGeoInfo(result?.geo ?? null);
         if (!result?.coords?.lat || !result?.coords?.lon) {
@@ -348,50 +416,65 @@ export default function OperarioCuadrilla() {
         } else {
           setGeoMsg(null);
         }
+
         setAttendanceResult({
-          isOpen: true,
-          tipo: 'entrada',
-          success: result?.success,
-          hoursWorked: result?.hoursWorked,
+          isOpen: true, tipo: 'entrada',
+          success:       result?.success,
+          hoursWorked:   result?.hoursWorked,
           arrivalStatus: arr.status,
-          diffMin: arr.diffMin,
-          errorMsg: result?.success ? null : (result?.error ?? 'No se pudo registrar'),
+          diffMin:       arr.diffMin,
+          errorMsg:      result?.success ? null : (result?.error ?? 'No se pudo registrar'),
         });
         if (result?.success) {
           await getTodayRecords();
           await loadFollowups();
           setTimeout(() => setGeoOpen(true), 300);
         }
-      } else {
-        const ex = evaluateExit(new Date(meta.client_timestamp));
-        setAttendanceResult({
-          isOpen: true,
-          tipo: 'salida',
-          success: result?.success,
-          hoursWorked: result?.hoursWorked,
-          exitStatus: ex.status,
-          diffMinToEnd: ex.diffMinToEnd,
-          endHHMM: format(ex.end, 'HH:mm'),
-          errorMsg: result?.success ? null : (result?.error ?? 'No se pudo registrar'),
-        });
-        if (result?.success) { await getTodayRecords(); await loadFollowups(); }
+        return;
       }
+
+      // Salida normal (no anticipada >30 min)
+      const ex = evaluateExit(now);
+      const meta: any = {
+        client_timestamp:  now.toISOString(),
+        salida_estado:     ex.status,
+        minutos_antes_fin: ex.diffMinToEnd,
+        horario_inicio:    ex.sch.startHHMM,
+        horario_fin:       ex.sch.endHHMM,
+      };
+      const result = await (markAttendance as any)(tipo, photoBlob, meta);
+
+      setAttendanceResult({
+        isOpen: true, tipo: 'salida',
+        success:      result?.success,
+        hoursWorked:  result?.hoursWorked,
+        exitStatus:   ex.status,
+        diffMinToEnd: ex.diffMinToEnd,
+        endHHMM:      format(ex.end, 'HH:mm'),
+        errorMsg:     result?.success ? null : (result?.error ?? 'No se pudo registrar'),
+      });
+      if (result?.success) { await getTodayRecords(); await loadFollowups(); }
+
     } catch (err: any) {
       console.error(err);
       showError(tipo, err?.message || cameraError || 'Error. Verifica permisos de Cámara/Ubicación.');
+    } finally {
+      processingRef.current = false;
     }
   };
 
+  // ── Registrar evidencia 1 ó 2 ────────────────────────────────────────────
   const handleFollowUp = async (n: 1 | 2) => {
     try {
       if (!activeEntrada?.id || !user?.id) { showError('entrada', 'Primero marca la entrada.'); return; }
       if (n === 1 && !follow1EnabledInfo.enabled) return;
       if (n === 2 && !hasFollow1) return;
 
-      const blob = await capturePhoto();
+      const blob     = await capturePhoto();
       const localRow: FollowUpRow = { evidencia_n: n, foto_url: 'local://pending', timestamp: new Date().toISOString() };
-      const current = readLocalFollowups(user.id, activeEntrada.id);
-      const next = [...current.filter((x) => x.evidencia_n !== n), localRow].sort((a, b) => a.evidencia_n - b.evidencia_n);
+      const current  = readLocalFollowups(user.id, activeEntrada.id);
+      const next     = [...current.filter((x) => x.evidencia_n !== n), localRow]
+        .sort((a, b) => a.evidencia_n - b.evidencia_n);
       writeLocalFollowups(user.id, activeEntrada.id, next);
       setLocalFollowups(next);
 
@@ -405,17 +488,15 @@ export default function OperarioCuadrilla() {
     }
   };
 
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen flex flex-col bg-background">
 
       <header className="sticky top-0 z-10 bg-card border-b px-4 py-3 shadow-sm">
         <div className="max-w-lg mx-auto w-full flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
-            <img
-              src="/logo_ipsa.JPG.jpeg"
-              alt="Logo IPSA"
-              className="h-10 w-auto object-contain shrink-0 sm:h-14"
-            />
+            <img src="/logo_ipsa.JPG.jpeg" alt="Logo IPSA"
+              className="h-10 w-auto object-contain shrink-0 sm:h-14" />
             <div className="min-w-0 flex flex-col">
               <p className="text-sm font-semibold text-foreground leading-tight truncate sm:text-base">
                 {profile?.nombre || 'Usuario'}
@@ -442,22 +523,16 @@ export default function OperarioCuadrilla() {
 
       <main className="flex-1 p-3 sm:p-4 space-y-3 sm:space-y-4 max-w-lg mx-auto w-full">
 
-        <div className="flex justify-center">
-          <SyncStatusBadge />
-        </div>
+        <div className="flex justify-center"><SyncStatusBadge /></div>
 
         <HoursWorkedCard hours={hoursWorked} />
 
         {/* Timer labor */}
         {follow1Timestamp && (
           <div className={`rounded-lg border p-3 sm:p-4 flex items-center gap-3 ${
-            follow2Timestamp
-              ? 'border-emerald-500/30 bg-emerald-500/5'
-              : 'border-blue-500/30 bg-blue-500/5'
+            follow2Timestamp ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-blue-500/30 bg-blue-500/5'
           }`}>
-            <Timer className={`h-5 w-5 sm:h-6 sm:w-6 shrink-0 ${
-              follow2Timestamp ? 'text-emerald-600' : 'text-blue-500'
-            }`} />
+            <Timer className={`h-5 w-5 sm:h-6 sm:w-6 shrink-0 ${follow2Timestamp ? 'text-emerald-600' : 'text-blue-500'}`} />
             <div className="flex-1 min-w-0">
               <p className="text-xs text-muted-foreground">
                 {follow2Timestamp ? 'Labor finalizada — duración total' : 'Labor en curso'}
@@ -474,9 +549,7 @@ export default function OperarioCuadrilla() {
         )}
 
         <div>
-          <h2 className="text-xs sm:text-sm font-medium text-muted-foreground mb-2">
-            Último registro hoy
-          </h2>
+          <h2 className="text-xs sm:text-sm font-medium text-muted-foreground mb-2">Último registro hoy</h2>
           <LastRecordCard record={lastRecord} />
         </div>
 
@@ -494,7 +567,7 @@ export default function OperarioCuadrilla() {
             </span>
           </AttendanceButton>
 
-          {/* 2) EVIDENCIA 1 — inicio labor */}
+          {/* 2) EVIDENCIA 1 */}
           <Button
             className="w-full h-10 sm:h-11 text-sm"
             onClick={() => handleFollowUp(1)}
@@ -510,7 +583,7 @@ export default function OperarioCuadrilla() {
             </span>
           </Button>
 
-          {/* 3) EVIDENCIA 2 — fin labor (OBLIGATORIA para salir) */}
+          {/* 3) EVIDENCIA 2 */}
           <Button
             className="w-full h-10 sm:h-11 text-sm"
             variant="outline"
@@ -527,17 +600,14 @@ export default function OperarioCuadrilla() {
             </span>
           </Button>
 
-          {/* ✅ Aviso visual cuando falta la Evidencia 2 y hay Evidencia 1 */}
           {hasFollow1 && !hasFollow2 && (
             <div className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2">
               <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
-              <p className="text-xs text-amber-700">
-                Debes finalizar la labor antes de marcar la salida.
-              </p>
+              <p className="text-xs text-amber-700">Debes finalizar la labor antes de marcar la salida.</p>
             </div>
           )}
 
-          {/* 4) SALIDA — requiere Evidencia 1 Y Evidencia 2 */}
+          {/* 4) SALIDA */}
           <AttendanceButton
             type="salida"
             onClick={() => handleMarkAttendance('salida')}
@@ -576,10 +646,7 @@ export default function OperarioCuadrilla() {
             </h3>
             <div className="space-y-1.5 sm:space-y-2">
               {todayRecords.slice(0, 4).map((record) => (
-                <div
-                  key={record.id}
-                  className="flex items-center justify-between px-3 py-2 rounded-lg bg-muted/50"
-                >
+                <div key={record.id} className="flex items-center justify-between px-3 py-2 rounded-lg bg-muted/50">
                   <span className={`text-xs sm:text-sm font-medium ${
                     record.tipo_registro === 'entrada' ? 'text-success' : 'text-destructive'
                   }`}>
@@ -596,11 +663,9 @@ export default function OperarioCuadrilla() {
         )}
       </main>
 
-      {/* Modal resultado entrada/salida */}
-      <Dialog
-        open={attendanceResult.isOpen}
-        onOpenChange={(o) => !o && setAttendanceResult((p) => ({ ...p, isOpen: false }))}
-      >
+      {/* ── Modal resultado entrada/salida ── */}
+      <Dialog open={attendanceResult.isOpen}
+        onOpenChange={(o) => !o && setAttendanceResult((p) => ({ ...p, isOpen: false }))}>
         <DialogContent className="max-w-sm mx-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-base">
@@ -610,14 +675,12 @@ export default function OperarioCuadrilla() {
               {attendanceResult.tipo === 'entrada' ? 'Registro de Entrada' : 'Registro de Salida'}
             </DialogTitle>
           </DialogHeader>
-
           <div className="space-y-3">
             {!attendanceResult.success && attendanceResult.errorMsg && (
               <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-sm text-destructive">
                 {attendanceResult.errorMsg}
               </div>
             )}
-
             {attendanceResult.success && attendanceResult.tipo === 'entrada' && attendanceResult.arrivalStatus && (
               <div className={`p-3 sm:p-4 rounded-lg border ${
                 attendanceResult.arrivalStatus === 'tarde'
@@ -634,6 +697,7 @@ export default function OperarioCuadrilla() {
                           ? `${attendanceResult.diffMin} min después del límite (06:10)`
                           : 'Fuera del rango permitido'}
                       </p>
+                      <p className="text-xs text-muted-foreground mt-0.5">Motivo registrado ✓</p>
                     </div>
                   </div>
                 ) : (
@@ -651,7 +715,6 @@ export default function OperarioCuadrilla() {
                 )}
               </div>
             )}
-
             {attendanceResult.success && attendanceResult.tipo === 'salida' && attendanceResult.exitStatus && (
               <div className={`p-3 sm:p-4 rounded-lg border ${
                 attendanceResult.exitStatus === 'a_tiempo'
@@ -691,7 +754,6 @@ export default function OperarioCuadrilla() {
                 )}
               </div>
             )}
-
             {attendanceResult.success && attendanceResult.hoursWorked != null && (
               <div className="p-3 rounded-lg bg-muted text-sm flex justify-between items-center">
                 <span className="text-muted-foreground text-xs sm:text-sm">Horas trabajadas hoy</span>
@@ -699,25 +761,21 @@ export default function OperarioCuadrilla() {
               </div>
             )}
           </div>
-
           <DialogFooter>
-            <Button
-              className="w-full sm:w-auto"
-              onClick={() => setAttendanceResult((p) => ({ ...p, isOpen: false }))}
-            >
+            <Button className="w-full sm:w-auto"
+              onClick={() => setAttendanceResult((p) => ({ ...p, isOpen: false }))}>
               Aceptar
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Modal Geo */}
+      {/* ── Modal Geo ── */}
       <Dialog open={geoOpen} onOpenChange={setGeoOpen}>
         <DialogContent className="max-w-sm mx-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-base">
-              <MapPin className="h-5 w-5 shrink-0" />
-              Ubicación al iniciar turno
+              <MapPin className="h-5 w-5 shrink-0" /> Ubicación al iniciar turno
             </DialogTitle>
             <DialogDescription className="text-xs sm:text-sm">
               Al iniciar el turno te encuentras en
@@ -734,15 +792,11 @@ export default function OperarioCuadrilla() {
                 <p className="text-sm sm:text-base font-semibold">{geoInfo.hac_ste}</p>
               </div>
               {geoCoords?.accuracy != null && (
-                <p className="text-xs text-muted-foreground">
-                  Precisión GPS: ±{Math.round(geoCoords.accuracy)} m
-                </p>
+                <p className="text-xs text-muted-foreground">Precisión GPS: ±{Math.round(geoCoords.accuracy)} m</p>
               )}
             </div>
           ) : (
-            <div className="p-3 rounded-lg bg-muted text-xs sm:text-sm">
-              {geoMsg ?? 'Consultando...'}
-            </div>
+            <div className="p-3 rounded-lg bg-muted text-xs sm:text-sm">{geoMsg ?? 'Consultando...'}</div>
           )}
           <DialogFooter>
             <Button className="w-full sm:w-auto" onClick={() => setGeoOpen(false)}>Aceptar</Button>
@@ -750,28 +804,68 @@ export default function OperarioCuadrilla() {
         </DialogContent>
       </Dialog>
 
-      {/* Modal salida temprana */}
+      {/* ── Modal entrada tarde ── */}
+      <Dialog open={lateEntryOpen} onOpenChange={setLateEntryOpen}>
+        <DialogContent className="max-w-sm mx-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <AlertTriangle className="h-5 w-5 text-destructive shrink-0" /> Llegada tarde
+            </DialogTitle>
+            <DialogDescription className="text-xs sm:text-sm">
+              Estás llegando después del límite permitido (06:10). Debes justificar el motivo para registrar la entrada.
+            </DialogDescription>
+          </DialogHeader>
+          {pendingLateEntry?.arrEval && (
+            <div className="p-3 rounded-lg bg-destructive/5 border border-destructive/20 text-xs sm:text-sm space-y-1">
+              <div>Hora límite: <b>06:10</b></div>
+              <div>Minutos de retraso: <b>{Math.max(0, pendingLateEntry.arrEval.diffMin - 10)} min</b></div>
+            </div>
+          )}
+          <div className="space-y-2">
+            <Label className="text-sm">
+              Motivo de la llegada tarde <span className="text-destructive">*</span>
+            </Label>
+            <Input
+              value={lateEntryMotivo}
+              onChange={(e) => setLateEntryMotivo(e.target.value)}
+              placeholder="Ej: tráfico, problema en casa, cita médica..."
+              className="text-sm"
+              autoFocus
+            />
+          </div>
+          <DialogFooter className="flex-col sm:flex-row gap-2">
+            <Button variant="outline" className="w-full sm:w-auto"
+              onClick={() => { setLateEntryOpen(false); setPendingLateEntry(null); setLateEntryMotivo(''); }}>
+              Cancelar
+            </Button>
+            <Button className="w-full sm:w-auto"
+              disabled={!lateEntryMotivo.trim()}
+              onClick={confirmLateEntry}>
+              Registrar entrada
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Modal salida temprana ── */}
       <Dialog open={earlyExitOpen} onOpenChange={setEarlyExitOpen}>
         <DialogContent className="max-w-sm mx-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-base">
-              <AlertTriangle className="h-5 w-5 text-destructive shrink-0" />
-              Salida temprana
+              <AlertTriangle className="h-5 w-5 text-destructive shrink-0" /> Salida temprana
             </DialogTitle>
             <DialogDescription className="text-xs sm:text-sm">
               Registra el motivo y toma foto del permiso firmado.
             </DialogDescription>
           </DialogHeader>
-
           {pendingExit?.exitEval && (
             <div className="p-3 rounded-lg bg-muted text-xs sm:text-sm space-y-1">
               <div>Hora fin esperada: <b>{format(pendingExit.exitEval.end, 'HH:mm')}</b></div>
               <div>Sales con: <b>{pendingExit.exitEval.diffMinToEnd} min</b> de anticipación</div>
             </div>
           )}
-
           <div className="space-y-2">
-            <Label className="text-sm">Motivo</Label>
+            <Label className="text-sm">Motivo <span className="text-destructive">*</span></Label>
             <Input
               value={earlyExitMotivo}
               onChange={(e) => setEarlyExitMotivo(e.target.value)}
@@ -782,21 +876,20 @@ export default function OperarioCuadrilla() {
               Al confirmar se abrirá la cámara para el permiso firmado.
             </p>
           </div>
-
           <DialogFooter className="flex-col sm:flex-row gap-2">
-            <Button
-              variant="outline"
-              className="w-full sm:w-auto"
-              onClick={() => { setEarlyExitOpen(false); setPendingExit(null); }}
-            >
+            <Button variant="outline" className="w-full sm:w-auto"
+              onClick={() => { setEarlyExitOpen(false); setPendingExit(null); }}>
               Cancelar
             </Button>
-            <Button className="w-full sm:w-auto" onClick={confirmEarlyExit}>
+            <Button className="w-full sm:w-auto"
+              disabled={!earlyExitMotivo.trim()}
+              onClick={confirmEarlyExit}>
               Confirmar y tomar permiso
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
     </div>
   );
 }
