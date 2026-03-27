@@ -259,7 +259,7 @@ async function syncPendingData(userId: string, entradaId: string, revisionId: st
     else console.error("[sync implemento inicio revision]", error.message);
   }
 
-  // ── [NUEVO] Sync checklist pendiente ──────────────────────────────────
+  // Sync checklist pendiente
   const pendingCl = readPendingChecklist(userId, entradaId);
   if (pendingCl && Object.keys(pendingCl).length > 0) {
     const { error } = await supabase
@@ -325,7 +325,7 @@ export default function OperarioMaquinariaImplementoInicio() {
     checklist.estado_soldadura !== null &&
     checklist.fugas_aceite     !== null;
 
-  // ── [MODIFICADO] Guarda en DB + local + acumula pending si offline ─────
+  // Guarda en DB + local + acumula pending si offline
   const updateChecklist = async (field: keyof Checklist, value: any) => {
     const next = { ...checklist, [field]: value };
     setChecklist(next);
@@ -344,7 +344,6 @@ export default function OperarioMaquinariaImplementoInicio() {
         writePendingChecklist(user.id, entradaId, { ...pend, [field]: value });
       }
     } else {
-      // Sin red o sin revisionId aún: acumular en pending
       const pend = readPendingChecklist(user.id, entradaId) ?? {};
       writePendingChecklist(user.id, entradaId, { ...pend, [field]: value });
     }
@@ -359,7 +358,7 @@ export default function OperarioMaquinariaImplementoInicio() {
     !loading &&
     !creating;
 
-  // ── Monitor online/offline ────────────────────────────────────────────────
+  // Monitor online/offline
   useEffect(() => {
     const onOnline = async () => {
       setIsOffline(false);
@@ -374,7 +373,7 @@ export default function OperarioMaquinariaImplementoInicio() {
     };
   }, [user?.id, entradaId, revisionId]);
 
-  // ── Cargar estado local de subidas + checklist ────────────────────────────
+  // Cargar estado local de subidas + checklist
   useEffect(() => {
     if (!user?.id || !entradaId) return;
     const local = readLocalSubidas(user.id, entradaId);
@@ -386,7 +385,7 @@ export default function OperarioMaquinariaImplementoInicio() {
     setChecklist(cl);
   }, [user?.id, entradaId]);
 
-  // ── Helper geo ────────────────────────────────────────────────────────────
+  // Helper geo
   const getGeoPayload = async (userId: string, entradaId: string): Promise<GeoInfo> => {
     const cached = readGeoCache(userId, entradaId);
     if (cached) return cached;
@@ -416,7 +415,7 @@ export default function OperarioMaquinariaImplementoInicio() {
     }
   };
 
-  // ── Crear o recuperar revisión implemento INICIO ──────────────────────────
+  // Crear o recuperar revisión implemento INICIO
   useEffect(() => {
     if (!user?.id || !entradaId) return;
 
@@ -428,7 +427,6 @@ export default function OperarioMaquinariaImplementoInicio() {
         if (navigator.onLine) {
           const { data: existing, error: selErr } = await supabase
             .from("revision_implemento")
-            // ── [MODIFICADO] añadir columnas checklist al select ──────────
             .select("id, latitud, longitud, hac_ste, suerte_nom, precision_gps, fuera_zona, estado_soldadura, fugas_aceite, updated_at, created_at")
             .eq("user_id", user.id).eq("tipo", "inicio").eq("entrada_id", entradaId)
             .order("updated_at", { ascending: false }).order("created_at", { ascending: false })
@@ -439,13 +437,11 @@ export default function OperarioMaquinariaImplementoInicio() {
             setRevisionId(row.id);
             writeLocalRevisionId(user.id, entradaId, row.id);
 
-            // ── [NUEVO] Recuperar checklist de DB y merge con local ───────
             const dbCl: Checklist = {
               estado_soldadura: (row.estado_soldadura as EstadoSoldadura) ?? null,
               fugas_aceite:     (row.fugas_aceite     as FugasAceite)     ?? null,
             };
             const localCl = readLocalChecklist(user.id, entradaId);
-            // DB gana para campos no-nulos; local cubre lo que DB aún no tiene
             const mergedCl: Checklist = {
               estado_soldadura: dbCl.estado_soldadura ?? localCl.estado_soldadura,
               fugas_aceite:     dbCl.fugas_aceite     ?? localCl.fugas_aceite,
@@ -514,10 +510,45 @@ export default function OperarioMaquinariaImplementoInicio() {
     };
 
     loadOrCreateRevision();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id, entradaId]);
 
-  // ── Capturar y subir foto ─────────────────────────────────────────────────
+  const savePhotoOffline = async (
+    blob: Blob,
+    tipo: FotoTipo,
+    filePath: string,
+    revisionId: string,
+    userId: string,
+    entradaId: string
+  ) => {
+    try {
+      const b64 = await blobToBase64(blob);
+      const entrySize = b64.length;
+      const currentStorage = JSON.stringify(localStorage).length;
+      const MAX_SAFE_SIZE = 4.5 * 1024 * 1024;
+
+      if (currentStorage + entrySize > MAX_SAFE_SIZE) {
+        alert("⚠️ El almacenamiento está casi lleno. Sincroniza las fotos actuales antes de tomar nuevas.");
+        return;
+      }
+
+      const all = readPendingPhotos();
+      const next = [
+        ...all.filter((p) => !(p.revisionId === revisionId && p.tipo === tipo)),
+        {
+          revisionId, userId, entradaId, tipo, filePath,
+          blobBase64: b64, contentType: "image/webp",
+          timestamp: new Date().toISOString()
+        },
+      ];
+
+      writePendingPhotos(next);
+      console.log(`📸 Guardado offline: ${tipo} (${(entrySize / 1024).toFixed(0)}KB)`);
+    } catch (e) {
+      console.error("Error en savePhotoOffline:", e);
+      alert("No se pudo guardar la foto. Libera espacio en el navegador.");
+    }
+  };
+
   const handleCapture = async (tipo: FotoTipo) => {
     if (!revisionId || !user?.id || !entradaId) return;
     try {
@@ -555,22 +586,6 @@ export default function OperarioMaquinariaImplementoInicio() {
     }
   };
 
-  const savePhotoOffline = async (
-    blob: Blob, tipo: FotoTipo, filePath: string,
-    revisionId: string, userId: string, entradaId: string
-  ) => {
-    try {
-      const b64 = await blobToBase64(blob);
-      const all = readPendingPhotos();
-      const next = [
-        ...all.filter((p) => !(p.revisionId === revisionId && p.tipo === tipo)),
-        { revisionId, userId, entradaId, tipo, filePath, blobBase64: b64, contentType: "image/webp", timestamp: new Date().toISOString() },
-      ];
-      writePendingPhotos(next);
-    } catch (e) { console.error("[savePhotoOffline implemento inicio]", e); }
-  };
-
-  // ── Finalizar ─────────────────────────────────────────────────────────────
   const finalizar = () => {
     if (!puedeFinalizar) return;
     const dateISO = getLocalDateISO();
@@ -578,11 +593,8 @@ export default function OperarioMaquinariaImplementoInicio() {
     navigate("/OperarioMaquinaria", { replace: true });
   };
 
-  // ─────────────────────────────────────────────────────────────────────────
   return (
     <div className="p-4 max-w-lg mx-auto space-y-4">
-
-      {/* Header */}
       <div className="flex items-center gap-2">
         <Button type="button" variant="ghost" size="icon" onClick={() => navigate(-1)} disabled={loading}>
           <ArrowLeft className="h-5 w-5" />
@@ -611,7 +623,6 @@ export default function OperarioMaquinariaImplementoInicio() {
         <div className="text-sm text-muted-foreground text-center py-2">Preparando revisión…</div>
       )}
 
-      {/* Fotos */}
       <div className="space-y-3">
         {FOTO_TIPOS.map((f) => (
           <Button
@@ -623,9 +634,7 @@ export default function OperarioMaquinariaImplementoInicio() {
           >
             {subidas[f.key] ? <CheckCircle className="h-4 w-4 mr-2 text-success" /> : <Camera className="h-4 w-4 mr-2" />}
             {f.label}
-            {subidas[f.key] && isOffline
-              ? <span className="ml-auto text-xs text-amber-500">pendiente sync</span>
-              : null}
+            {subidas[f.key] && isOffline ? <span className="ml-auto text-xs text-amber-500">pendiente sync</span> : null}
           </Button>
         ))}
       </div>
@@ -634,7 +643,6 @@ export default function OperarioMaquinariaImplementoInicio() {
         Fotos: {completas} / {FOTO_TIPOS.length}
       </p>
 
-      {/* ── CHECKLIST ─────────────────────────────────────────────────────── */}
       <div className="rounded-lg border-2 border-dashed border-muted-foreground/30 p-4 space-y-4">
         <div className="flex items-center gap-2">
           <div className="h-5 w-5 rounded-full bg-primary/10 flex items-center justify-center">
@@ -648,7 +656,6 @@ export default function OperarioMaquinariaImplementoInicio() {
           )}
         </div>
 
-        {/* Estado de soldadura */}
         <div className="space-y-1.5">
           <div className="flex items-center justify-between">
             <label className="text-sm font-medium">Estado de soldadura</label>
@@ -661,7 +668,6 @@ export default function OperarioMaquinariaImplementoInicio() {
           />
         </div>
 
-        {/* Fugas de aceite */}
         <div className="space-y-1.5">
           <div className="flex items-center justify-between">
             <label className="text-sm font-medium">Fugas de aceite</label>
@@ -675,7 +681,6 @@ export default function OperarioMaquinariaImplementoInicio() {
         </div>
       </div>
 
-      {/* Botón finalizar */}
       <Button
         type="button" className="w-full"
         disabled={!puedeFinalizar}
@@ -689,7 +694,6 @@ export default function OperarioMaquinariaImplementoInicio() {
           ? `Faltan ${FOTO_TIPOS.length - completas} foto(s)`
           : "Finalizar revisión implemento inicio"}
       </Button>
-
     </div>
   );
 }

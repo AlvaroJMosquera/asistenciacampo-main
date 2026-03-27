@@ -27,24 +27,26 @@ function isLowMemoryDevice(): boolean {
   return mem <= 2;
 }
 
-/**
- * Opciones de compresión según capacidad del dispositivo.
- * - Low memory: máx 0.3 MB / 960px  → menos RAM al procesar
- * - Normal:     máx 0.5 MB / 1280px → calidad estándar (comportamiento anterior)
- */
 function getCompressionOptions() {
-  if (isLowMemoryDevice()) {
+  const isLow = isLowMemoryDevice();
+  const isApple = isIOS(); // iOS gestiona la RAM de forma muy estricta (y a veces peor)
+
+  if (isLow || isApple) {
     return {
-      maxSizeMB: 0.3,
-      maxWidthOrHeight: 960,
-      useWebWorker: true,
-      initialQuality: 0.7,
+      maxSizeMB: 0.2,            // 200KB es ideal para reportes técnicos
+      maxWidthOrHeight: 800,     // Menos píxeles = Menos RAM al procesar el Canvas
+      useWebWorker: false,       // Evitamos el "pico" de RAM de abrir un hilo nuevo
+      initialQuality: 0.6,
+      fileType: 'image/webp',    // WebP es más ligero de procesar
     };
   }
+
+  // Configuración para equipos potentes
   return {
-    maxSizeMB: 0.5,
-    maxWidthOrHeight: 1280,
-    useWebWorker: true,
+    maxSizeMB: 0.5,              // Calidad superior
+    maxWidthOrHeight: 1280,      // Resolución HD
+    useWebWorker: true,          // Aprovechamos los múltiples núcleos
+    initialQuality: 0.8,
   };
 }
 
@@ -106,26 +108,30 @@ export function useCamera() {
         reject(new Error(msg));
       };
 
-      const finishResolve = async (file: File) => {
-        if (done) return;
-        done = true;
+     const finishResolve = async (file: File) => {
+  if (done) return;
+  done = true;
 
-        try {
-          // ✅ Compresión adaptativa: menos agresiva en dispositivos con buena RAM,
-          //    más conservadora en dispositivos con poca memoria.
-          const options = getCompressionOptions();
-          const compressed = await imageCompression(file, options);
+  try {
+    // IMPORTANTE: Liberamos el input del DOM ANTES de empezar la compresión
+    cleanup(); 
 
-          cleanup();
-          setState({ isCapturing: false, error: null });
-          resolve(compressed);
-        } catch {
-          cleanup();
-          const msg = 'Error procesando la foto';
-          setState({ isCapturing: false, error: msg });
-          reject(new Error(msg));
-        }
-      };
+    // Pausa táctica: Da tiempo al navegador para cerrar la interfaz de la cámara
+    // y liberar los 100MB+ que consume el visor de cámara activo.
+    await new Promise(r => setTimeout(r, 400));
+
+    const options = getCompressionOptions();
+    const compressed = await imageCompression(file, options);
+
+    setState({ isCapturing: false, error: null });
+    resolve(compressed);
+  } catch (err) {
+    // Si falla la compresión por falta de RAM, resolvemos con el archivo original 
+    // pero avisamos en consola
+    console.error("Fallo compresión, intentando enviar original", err);
+    resolve(file); 
+  }
+};
 
       // ✅ Cancelación estable: solo por timeout largo
       const cancelMs = isAndroid() ? 45000 : 30000;

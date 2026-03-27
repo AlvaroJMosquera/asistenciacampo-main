@@ -511,7 +511,7 @@ export default function SupervisorMaquinaria() {
       <header className="sticky top-0 z-10 bg-card border-b px-4 py-3 shadow-sm">
         <div className="max-w-6xl mx-auto w-full flex items-center justify-between">
           <div className="min-w-0">
-            <p className="text-base font-semibold">Supervisor Maquinaria</p>
+            <p className="text-base font-semibold">Lider Maquinaria</p>
             <p className="text-sm text-muted-foreground capitalize">{prettyDate}</p>
           </div>
           <div className="flex items-center gap-2">
